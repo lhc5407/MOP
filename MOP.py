@@ -230,6 +230,13 @@ def main() -> None:
         if user_input.lower() in ['quit', 'exit']: break
         if user_input.lower() == 'clear': messages = [messages[0]]; print("🔄 초기화됨."); continue
 
+        # 👇 [추가] -f 플래그 감지 및 처리 로직
+        auto_approve = False
+        if user_input.endswith("-f") or user_input.endswith("-F"):
+            auto_approve = True
+            user_input = user_input[:-2].strip() # AI가 헷갈리지 않게 명령어에서 '-f' 텍스트는 제거
+            print("   [시스템] ⚡ '-f' 플래그 감지: 이번 턴의 하드웨어 보안 승인이 자동으로 패스됩니다.")
+            
         archive_to_sqlite("user", user_input)
         messages.append({"role": "user", "content": user_input})
         
@@ -344,8 +351,15 @@ def main() -> None:
                         tool_result = execute_skill_safely(["python", "./skills/memory_tools.py", "--action", "read", "--key", args_dict.get("key", "")])
 
                     elif tc_name in ["control_mouse", "control_keyboard"]:
-                        print(f"⚠️  [보안 승인 대기] 하드웨어 제어 요청: {tc_name}")
-                        if input("   👉 허용하시겠습니까? (y/n): ").lower().strip() == 'y':
+                        # 👇 [수정] 자동 승인 플래그(auto_approve)에 따른 분기 처리
+                        if auto_approve:
+                            print(f"⚠️  [자동 승인] 하드웨어 제어 프리패스: {tc_name}")
+                            user_consent = 'y'
+                        else:
+                            print(f"⚠️  [보안 승인 대기] 하드웨어 제어 요청: {tc_name}")
+                            user_consent = input("   👉 허용하시겠습니까? (y/n): ").lower().strip()
+                        
+                        if user_consent == 'y':
                             script_path = os.path.join(".", "skills", "computer_tools.py")
                             cli_args = ["python", script_path, "--device", "mouse" if "mouse" in tc_name else "keyboard", "--action", args_dict.get("action", "")]
                             if "x" in args_dict: cli_args.extend(["--x", str(args_dict["x"])])
@@ -353,7 +367,8 @@ def main() -> None:
                             if "text" in args_dict: cli_args.extend(["--text", args_dict["text"]])
                             if "key" in args_dict: cli_args.extend(["--key", args_dict["key"]])
                             tool_result = execute_skill_safely(cli_args)
-                        else: tool_result = "거부됨."
+                        else: 
+                            tool_result = "사용자가 실행을 거부했습니다."
 
                     else: tool_result = f"알 수 없는 도구: {tc_name}"
 
