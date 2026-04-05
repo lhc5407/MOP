@@ -339,9 +339,10 @@ class MOPApp(ctk.CTk):
 
     def load_engine_task(self, path):
         self.log_debug("모델 로딩 중... UI 설정값들이 엔진에 반영됩니다.")
-        self.send_btn.configure(state="disabled")
         
-        # 👇 [수정] .get() 대신 get_safe_int()를 사용하여 에러 원천 차단 (기본값 세팅)
+        # 👇 [수정 1] 백그라운드 스레드에서 UI를 직접 건드리지 않도록 after 사용
+        self.after(0, lambda: self.send_btn.configure(state="disabled"))
+        
         success = self.engine.load_model(
             model_path=path, 
             n_gpu_layers=self.get_safe_int(self.gpu_layers_var, 15), 
@@ -352,7 +353,8 @@ class MOPApp(ctk.CTk):
         
         if success:
             self.log_debug("✅ 모델 로딩 성공!")
-            self.send_btn.configure(state="normal")
+            # 👇 [수정 2] 완료 후 버튼 활성화도 after 사용
+            self.after(0, lambda: self.send_btn.configure(state="normal"))
             
             if not self.engine.messages:
                 self.engine.messages = [{"role": "system", "content": self.engine.custom_system_prompt}]
@@ -611,7 +613,6 @@ class MOPApp(ctk.CTk):
                 
                 if is_error:
                     consecutive_error_count += 1
-                    # 👇 [수정] max_retry_var 안전 호출
                     safe_max_retry = self.get_safe_int(self.max_retry_var, 3)
                     
                     self.log_debug(f"🚨 에러 발생 ({consecutive_error_count}/{safe_max_retry})")
@@ -623,7 +624,8 @@ class MOPApp(ctk.CTk):
                         break
                     
                     enforced_result = (
-                        f"🚨 [도구 실행 실패 - 에러 발생! (현재 {consecutive_error_count}회/최대 {self.max_retry_var.get()}회)]\n{tool_result}\n\n"
+                        # 👇 [수정 3] self.max_retry_var.get() 대신 안전한 safe_max_retry 변수 사용!
+                        f"🚨 [도구 실행 실패 - 에러 발생! (현재 {consecutive_error_count}회/최대 {safe_max_retry}회)]\n{tool_result}\n\n"
                         "---[시스템 디버그 긴급 지시 (Coding Agent Protocol)]---\n"
                         "1. (반복 금지): 직전과 똑같은 코드를 제출하지 마세요.\n"
                         "2. (우회로 탐색): 'run_shell_command'로 환경을 확인하거나 다른 라이브러리를 쓰세요.\n"

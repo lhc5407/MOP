@@ -1,3 +1,4 @@
 skills/.agent_memory.json
 skills/chat_history.db
 mop_ui_test.py
+skills/chat_history.db
