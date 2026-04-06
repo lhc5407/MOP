@@ -9,6 +9,8 @@ import gc
 import sqlite3
 import subprocess
 import re
+import sys
+import traceback
 from typing import List, Dict, Any, cast, Iterator
 from ddgs import DDGS
 
@@ -29,6 +31,9 @@ class MOPEngine:
         self.db_path = db_path
         self.llm = None
         self.messages = []
+        # 👇 [추가] 백그라운드 작업들을 관리할 저장소와 카운터
+        self.background_tasks = {}
+        self.task_counter = 0 
         self.custom_system_prompt = self.get_default_system_prompt()
         self.init_db()
 
@@ -90,6 +95,92 @@ class MOPEngine:
             return out_str or "실행 성공 (반환값 없음)"
         except Exception as e: return f"시스템 실행 에러: {str(e)}"
 
+    def start_background_task(self, command: str) -> str:
+        """명령어를 백그라운드에서 비동기로 실행합니다."""
+        self.task_counter += 1
+        task_id = f"task_{self.task_counter}"
+        
+        try:
+            # Popen을 사용하여 프로그램이 끝날 때까지 기다리지 않고 즉시 제어권을 넘김
+            process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
+            self.background_tasks[task_id] = {
+                "process": process, 
+                "command": command, 
+                "start_time": datetime.datetime.now().strftime("%H:%M:%S")
+            }
+            return f"✅ 성공: 백그라운드 작업 '{task_id}'가 시작되었습니다. (명령어: {command})\n에이전트는 즉시 다른 도구를 사용하거나 작업을 진행할 수 있습니다. 작업이 끝났는지 확인하려면 나중에 'check_task_status' 도구를 사용하세요."
+        except Exception as e:
+            return f"❌ 오류: 백그라운드 작업 시작 실패 - {e}"
+
+    def check_task_status(self, task_id: str) -> str:
+        """백그라운드 작업의 완료 여부를 확인하고 결과를 반환합니다."""
+        if task_id not in self.background_tasks:
+            return f"❌ 오류: '{task_id}' 작업을 찾을 수 없습니다. 이미 완료되어 결과를 확인했거나 잘못된 ID입니다."
+        
+        task_info = self.background_tasks[task_id]
+        process = task_info["process"]
+        
+        # poll()은 프로세스가 끝났으면 return code를, 아직 실행 중이면 None을 반환합니다.
+        ret_code = process.poll()
+        
+        if ret_code is None:
+            return f"⏳ 상태: '{task_id}' (시작: {task_info['start_time']}) 작업이 아직 실행 중입니다. 다른 작업을 먼저 처리하고 오세요."
+        else:
+            # 작업이 끝났다면 출력 결과를 가져오고 메모리에서 삭제
+            stdout, stderr = process.communicate()
+            del self.background_tasks[task_id]
+            
+            result_str = f"✅ 완료: '{task_id}' 작업이 종료되었습니다. (코드 {ret_code})\n[출력 결과]\n{stdout.strip()}\n"
+            if stderr.strip():
+                result_str += f"[에러 로그]\n{stderr.strip()}"
+            return result_str
+    
+    def run_sub_agent(self, instruction: str, file_path: str = "", input_data: str = "") -> str:
+        """서브에이전트를 생성하여 격리된 컨텍스트에서 분석을 수행합니다."""
+        if not self.llm: return "오류: LLM이 로드되지 않았습니다."
+
+        data_content = input_data
+        
+        # 파일 경로가 주어지면 파일을 읽어옴
+        if file_path:
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    data_content += f"\n[파일 내용: {file_path}]\n" + f.read()
+            except Exception as e:
+                return f"❌ 서브에이전트 오류: 파일 읽기 실패 - {e}"
+
+        if not data_content.strip():
+            return "❌ 오류: 분석할 데이터나 파일 내용이 없습니다."
+
+        # 👇 [핵심] 서브에이전트용 독립 컨텍스트 (메인 기억과 완벽히 격리됨)
+        sub_system_prompt = (
+            "당신은 메인 에이전트를 보조하는 '전문 분석 서브에이전트'입니다.\n"
+            "주어진 데이터를 분석하고 지시사항(Instruction)을 정확히 수행하세요.\n"
+            "불필요한 인사말이나 과정을 생략하고 '최종 결과와 핵심 요약'만을 명확하고 간결하게 보고하세요."
+        )
+
+        sub_messages = [
+            {"role": "system", "content": sub_system_prompt},
+            # 뇌 용량 보호를 위해 데이터는 최대 40000자로 자릅니다.
+            {"role": "user", "content": f"[지시사항]\n{instruction}\n\n[분석할 데이터]\n{data_content[:40000]}"} 
+        ]
+
+        try:
+            # 👇 [수정] cast를 씌워서 Pylance에게 타입에 대한 확신을 줍니다.
+            response = cast(Dict[str, Any], self.llm.create_chat_completion(
+                messages=cast(Any, sub_messages),  # 👈 에러 1 해결 (Any 타입으로 강제 변환)
+                max_tokens=2048,
+                temperature=0.1,  
+                stream=False
+            ))
+            
+            # 👈 에러 2 해결 (위에서 Dict라고 못을 박았으므로 안전하게 ['choices'] 접근 가능)
+            result_text = response['choices'][0]['message']['content'] 
+            return f"🤖 [서킷 격리: 서브에이전트 분석 보고서]\n{result_text}"
+            
+        except Exception as e:
+            return f"❌ 서브에이전트 추론 중 오류 발생: {e}"
+    
     def load_model(self, model_path, n_gpu_layers, n_ctx, n_threads, kv_quant_mode):
         if self.llm:
             del self.llm
@@ -131,9 +222,9 @@ class MOPEngine:
             "도구를 호출할 때는 반드시 아래의 JSON 스키마를 엄격히 준수하여 ```json 블록으로 출력하세요.\n"
             "- 예시: {\"name\": \"search_web\", \"arguments\": {\"query\": \"검색어\"}}\n\n"
             "[핵심 지침]\n"
-            "1. 한국어로 답변하고, 도구 호출은 ```json 블록을 사용하세요.\n"
+            "1. 유저에게 질문 받은 언어로 답변하고, 도구 호출은 ```json 블록을 사용하세요.\n"
             "2. 모든 작업은 순차적으로 진행하며, 한 번에 하나의 도구만 호출하세요.\n"
-            "3. [다중 작업 검증]: 작업이 끝났다고 대화를 멈추지 마세요. 완료되지 않은 지시가 있다면 즉시 다음 도구를 연속 호출하세요.\n"
+            "3. [다중 작업 및 종료 조건]: 완료되지 않은 작업이 있다면 계속해서 다음 도구를 호출하세요. 단, 사용자의 지시가 모두 완수되었다면 절대 불필요한 도구를 반복 호출하지 마세요. 작업이 끝나면 오직 자연어 텍스트로만 최종 결과를 보고하여 루프를 종료하세요.\n"
             "4. [자가 디버깅 루틴]: 에러가 발생하면 절대 포기하거나 사용자에게 변명하지 말고, 디버그 내용을 기반으로 코드를 수정하여 즉시 재호출하세요.\n"
             "5. [코딩 작업 지시서(Plan)]: 복잡한 코딩 요청을 받으면, 메모장이나 텍스트 파일에 '작업 계획서'를 먼저 작성하세요.\n"
             "6. [환경 파악]: 코드를 짜기 전에 'run_shell_command'로 환경을 먼저 확인하는 습관을 들이세요.\n"
@@ -141,10 +232,12 @@ class MOPEngine:
             "8. [단계별 체크포인트 전략]: 에러가 발생하면 전체 파일을 다시 처음부터 쓰지 마세요. 시스템이 알려주는 '실패 단계'를 확인하고, 해당 부분의 로직만 수정하여 다시 이어 붙이거나(Append) 패치(Edit) 하세요. 당신은 이전에 성공한 단계의 데이터를 신뢰할 수 있습니다.\n"
             "9. [토큰 낭비 방지]: 절대 <think> 태그를 사용하여 속마음을 출력하지 마세요. 불필요한 독백을 생략하고 즉시 도구 호출 JSON만 출력하세요.\n"
             "10. [대기 멘트 금지]: 도구 호출 전후에 '잠시 기다려주세요' 등의 변명을 절대 하지 마세요. 결과를 읽는 즉시 다음 도구를 연속 호출하거나 답변하세요.\n"
-            "11. [작업 완수 검증 프로토콜]: 새로운 도구를 호출하기 전, 반드시 직전 작업이 실제 시스템(파일 시스템, DB 등)에 반영되었는지 확인하는 습관을 가지세요. 예를 들어 파일을 생성했다면 run_shell_command('dir')로 존재를 확인한 뒤 다음 단계로 넘어가야 합니다. '이미 했다고 가정'하는 환각을 경계하고 물리적인 증거를 바탕으로 사고하세요.\n"
-            "12. [JSON 텍스트 규칙]: append_to_file의 'code' 인자나 control_keyboard의 'text' 인자 등 JSON 내부 문자열을 작성할 때는, 쌍따옴표(\") 충돌 에러를 막기 위해 반드시 홑따옴표(')만을 사용하세요. (예: print('성공'), '테스트 성공!')\n"
+            "11. [작업 계획 및 체크리스트]: 여러 단계의 복합 지시를 받으면, 첫 번째 도구를 호출하기 전 속마음(<think>)에 '전체 작업 체크리스트'를 작성하세요. 도구 호출 결과가 돌아올 때마다 체크리스트의 어떤 항목이 완료되었고, 어떤 항목이 남았는지 명시한 뒤 다음 단계를 즉시 수행하세요. 모든 번호가 매겨진 지시 사항이 물리적으로 완수되기 전에는 절대로 대화를 종료하지 마세요.\n"
+            "12. [JSON 텍스트 규칙]: JSON의 Key와 Value를 감싸는 구조적 기호는 반드시 표준 규격인 쌍따옴표(\")를 사용하세요. 단, Value 내부에 들어가는 '파이썬 코드'나 '단순 텍스트' 안에서 또 다른 따옴표가 필요할 때만 홑따옴표(')를 사용하세요. (잘못된 예: {\"text\": '안녕'}, 올바른 예: {\"text\": \"print('성공')\"} 또는 {\"text\": \"성공 완료!\"})\n"
             "13. [시간 인지 강제화]: 시스템이 맨 윗줄에 제공한 '현재 시간'이 이 세계의 절대적인 기준입니다. 당신의 훈련 데이터 시점(과거)을 기준으로 현재 시간을 '미래'라고 판단하거나 변명하지 마세요. 현재 시간을 기준으로 모든 상황을 해석하세요.\n"
-            "14. [글로벌 검색 프로토콜]: search_web 도구를 사용할 때는 사용자의 지시가 한국어라도 반드시 검색어를 영어로 번역해서 도구를 호출하세요. 검색된 영어 원문 데이터를 읽고 나면, 사용자에게 보고하거나 파일에 기록할 때는 완벽하고 자연스러운 한국어로 번역 및 요약해야 합니다."
+            "14. [글로벌 검색 프로토콜]: search_web 도구를 사용할 때는 사용자의 지시가 한국어라도 반드시 검색어를 영어로 번역해서 도구를 호출하세요. 검색된 영어 원문 데이터를 읽고 나면, 사용자에게 보고하거나 파일에 기록할 때는 완벽하고 자연스러운 한국어로 번역 및 요약해야 합니다.\n"
+            "15. [OS 환경]: 당신은 현재 Windows 환경에서 실행 중입니다. 터미널 명령어는 반드시 윈도우 CMD 기준으로 작성하세요. (예: pwd 대신 cd, ls 대신 dir, mkdir -p 대신 mkdir 사용)\n"
+            "16. [로컬 프로젝트 지침 절대 준수]: 만약 프롬프트 하단에 '[현재 프로젝트 맞춤 지침]'이라는 섹션이 존재한다면, 이는 당신이 현재 위치한 코드베이스의 최상위 법률입니다. 기존의 일반적인 개발 상식보다 이 지침의 내용을 최우선으로 적용하여 답변하고 코드를 작성하세요."
         )
 
     def get_tools(self):
@@ -193,6 +286,52 @@ class MOPEngine:
                         "required": ["file_path", "content"]
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "save_principle",
+                    "description": "사용자의 요청이 있거나, 중요한 깨달음을 얻었을 때 '학습된 자가 원칙'에 영구적으로 추가합니다.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "principle": {"type": "string", "description": "추가할 1문장 작업 원칙"}
+                        },
+                        "required": ["principle"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "start_background_task",
+                    "description": "시간이 오래 걸리는 터미널 명령어를 백그라운드에서 비동기로 실행합니다. 실행 즉시 작업 ID(task_id)를 반환하므로, 에이전트는 기다리지 않고 다른 도구를 병렬로 호출할 수 있습니다.",
+                    "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "check_task_status",
+                    "description": "백그라운드 작업(task_id)이 완료되었는지 확인합니다. 완료되었다면 실행 결과물(stdout/stderr)을 반환합니다.",
+                    "parameters": {"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]}
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "delegate_to_sub_agent",
+                    "description": "[컨텍스트 격리용] 방대한 파일이나 텍스트를 분석할 때 메인 메모리가 오염되지 않도록 서브에이전트에게 분석을 위임합니다. 서브에이전트는 독립된 뇌로 데이터를 분석하고 '핵심 요약 보고서'만 반환합니다. 주의: 파라미터 이름은 반드시 'instruction'과 'file_path'를 사용하세요. 'task' 같은 임의의 이름을 지어내면 에러가 발생합니다.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "instruction": {"type": "string", "description": "서브에이전트에게 내릴 구체적인 지시 (예: '이 코드에서 메모리 누수 원인을 찾아서 요약해줘')"},
+                            "file_path": {"type": "string", "description": "분석할 대상 파일의 경로 (예: './mop_app.py')"},
+                            "input_data": {"type": "string", "description": "직접 분석할 텍스트 데이터 (선택 사항)"}
+                        },
+                        "required": ["instruction"]
+                    }
+                }
             }
         ]
 
@@ -227,6 +366,7 @@ class MOPApp(ctk.CTk):
         
         # 4. 도구/권한 설정
         self.auto_approve_var = ctk.BooleanVar(value=False)
+        self.plan_mode_var = ctk.BooleanVar(value=True)
         self.show_think_var = ctk.BooleanVar(value=True)
         self.max_retry_var = ctk.IntVar(value=3)
 
@@ -234,6 +374,7 @@ class MOPApp(ctk.CTk):
         self.full_model_path = "" 
 
         self.user_instruction = "당신은 사용자님의 유능한 AI 비서입니다."
+        self.learned_principles = ""
 
         self.approval_event = threading.Event()
         self.approval_result = False
@@ -245,6 +386,8 @@ class MOPApp(ctk.CTk):
         self.load_settings()
         
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+        self.stop_generation_flag = False
 
     def on_closing(self):
         self.save_settings()
@@ -314,6 +457,8 @@ class MOPApp(ctk.CTk):
         ctk.CTkLabel(sidebar, text="🤖 에이전트 성향 제어", font=ctk.CTkFont(size=16, weight="bold"), text_color="#00A2FF").pack(pady=(0,10), padx=15, anchor="w")
         
         ctk.CTkButton(sidebar, text="📝 시스템 프롬프트 편집", command=self.open_sys_prompt_editor, fg_color="#4CAF50", hover_color="#388E3C").pack(pady=5, padx=15, fill="x")
+
+        ctk.CTkButton(sidebar, text="🧠 학습된 자가 원칙 관리", command=self.open_principles_editor, fg_color="#FF9800", hover_color="#F57C00").pack(pady=(0, 5), padx=15, fill="x")
         
         self.add_slider_control(sidebar, "창의성 (Temperature)", self.temp_var, 0, 1, 100, "{:.2f}", 
                                 help_text="크면: 창의적, 다양한 답변\n작으면: 논리적, 일관됨 (코딩은 0.1 권장)")
@@ -332,6 +477,8 @@ class MOPApp(ctk.CTk):
         # --- [4. 도구 권한] ---
         ctk.CTkFrame(sidebar, height=2, fg_color="gray30").pack(fill="x", padx=15, pady=20)
         ctk.CTkLabel(sidebar, text="🛠️ 권한 및 모니터링", font=ctk.CTkFont(size=16, weight="bold"), text_color="#00A2FF").pack(pady=(0,10), padx=15, anchor="w")
+
+        ctk.CTkSwitch(sidebar, text="✅ 계획 수립 모드 (Plan Mode)\n  (쓰기/실행 전 승인 받기)", variable=self.plan_mode_var).pack(pady=(5, 15), padx=15, anchor="w")
         
         ctk.CTkSwitch(sidebar, text="하드웨어 자동 승인 (-f)", variable=self.auto_approve_var).pack(pady=10, padx=15, anchor="w")
         ctk.CTkSwitch(sidebar, text="사고 과정(<think>) 표출", variable=self.show_think_var).pack(pady=10, padx=15, anchor="w")
@@ -389,6 +536,47 @@ class MOPApp(ctk.CTk):
             
         ctk.CTkButton(editor, text="저장 및 닫기", command=save_prompt).pack(pady=(0,20))
 
+    def open_principles_editor(self):
+        """학습된 자가 원칙을 열람하고 수정할 수 있는 팝업 창을 띄웁니다."""
+        editor = ctk.CTkToplevel(self)
+        editor.title("학습된 자가 원칙 관리 (Learned Principles)")
+        editor.geometry("700x500")
+        editor.attributes("-topmost", True)
+        
+        ctk.CTkLabel(editor, text="AI가 스스로 학습하고 누적한 경험치(원칙)입니다. 자유롭게 수정하거나 삭제할 수 있습니다.", text_color="gray").pack(pady=10)
+        
+        textbox = ctk.CTkTextbox(editor, wrap="word", font=ctk.CTkFont(size=13))
+        textbox.pack(fill="both", expand=True, padx=20, pady=(0,10))
+        
+        # 현재 원칙이 있으면 띄워주고, 없으면 안내 문구 표시
+        display_text = self.learned_principles if self.learned_principles.strip() else "아직 학습된 원칙이 없습니다. AI가 미션을 성공하면 이곳에 원칙이 누적됩니다."
+        textbox.insert("1.0", display_text)
+        
+        def save_principles():
+            new_text = textbox.get("1.0", "end-1c").strip()
+            
+            # 안내 문구 그대로 저장 방지
+            if new_text == "아직 학습된 원칙이 없습니다. AI가 미션을 성공하면 이곳에 원칙이 누적됩니다.":
+                new_text = ""
+                
+            # 끝에 줄바꿈 유지
+            self.learned_principles = new_text + "\n" if new_text else ""
+            self.save_settings()
+            
+            # 👇 방금 전 우리가 일치시켰던 로직 그대로! 활성 대화 즉시 갱신
+            if self.engine.messages and self.engine.messages[0]["role"] == "system":
+                static_rules = self.engine.get_default_system_prompt()
+                if self.learned_principles.strip():
+                    combined_prompt = f"{static_rules}\n\n[사용자 지정 페르소나 및 지침]\n{self.user_instruction}\n\n[학습된 자가 원칙]\n{self.learned_principles}"
+                else:
+                    combined_prompt = f"{static_rules}\n\n[사용자 지정 페르소나 및 지침]\n{self.user_instruction}"
+                self.engine.messages[0]["content"] = combined_prompt
+
+            self.log_debug("✨ 학습된 원칙이 수동으로 업데이트 및 저장되었습니다.")
+            editor.destroy()
+            
+        ctk.CTkButton(editor, text="저장 및 닫기", command=save_principles).pack(pady=(0,20))
+
     def browse_model(self):
         path = filedialog.askopenfilename(filetypes=[("GGUF Models", "*.gguf")])
         if path:
@@ -436,13 +624,44 @@ class MOPApp(ctk.CTk):
         if not query or not self.engine.llm: return "break"
         
         self.user_input.delete("1.0", "end")
-        self.send_btn.configure(state="disabled")
+        
+        # 👇 [수정] 전송 버튼을 비활성화하는 대신, 빨간색 '정지' 버튼으로 변신시킵니다!
+        self.set_ui_generating_state()
         
         # 👇 사용자가 엔터를 쳤을 때는 무조건 화면을 맨 아래로 끌어내립니다.
         self.append_chat(f"\n👤 사용자: {query}\n", "user", force_scroll=True)
         
         threading.Thread(target=self.ai_response_task, args=(query,), daemon=True).start()
         return "break"
+
+    # --- [전송/정지 버튼 상태 전환 헬퍼] ---
+    def set_ui_generating_state(self):
+        """AI 생성 중: 버튼을 '정지'로 변경"""
+        self.stop_generation_flag = False
+        self.send_btn.configure(
+            text="🛑 정지 (Stop)", 
+            fg_color="#D32F2F", 
+            hover_color="#B71C1C", 
+            command=self.stop_ai_generation,
+            state="normal"
+        )
+
+    def set_ui_idle_state(self):
+        """대기 중: 버튼을 다시 '전송'으로 복구"""
+        # 기본 테마의 파란색으로 복구
+        self.send_btn.configure(
+            text="전송", 
+            fg_color=ctk.ThemeManager.theme["CTkButton"]["fg_color"], 
+            hover_color=ctk.ThemeManager.theme["CTkButton"]["hover_color"],
+            command=self.handle_send,
+            state="normal"
+        )
+
+    def stop_ai_generation(self):
+        """사용자가 정지 버튼을 눌렀을 때 실행"""
+        self.stop_generation_flag = True
+        self.send_btn.configure(text="정지 중...", state="disabled")
+        self.log_debug("🛑 사용자가 정지 버튼을 눌렀습니다. 텍스트 생성을 즉시 멈춥니다.")
 
     # 1. 인자 이름을 목적에 맞게 'force_scroll'로 변경합니다.
     def append_chat(self, text, role="ai", force_scroll=False):
@@ -491,6 +710,25 @@ class MOPApp(ctk.CTk):
         except Exception:
             return default_val
 
+    def global_exception_handler(self, exc_type, exc_value, exc_traceback):
+        """Tkinter UI 이벤트 루프 내에서 발생하는 모든 에러를 낚아챕니다."""
+        err_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+        self.log_debug(f"🚨 [UI 런타임 오류 방어됨]\n{err_msg}")
+        # 필요하다면 여기서 엔진 초기화 등의 복구 로직을 넣을 수 있습니다.
+
+    def global_sys_handler(self, exc_type, exc_value, exc_traceback):
+        """일반 파이썬 백그라운드 스레드에서 발생하는 에러를 낚아챕니다."""
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        err_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+        
+        # UI가 아직 살아있다면 디버그 창에 출력
+        try:
+            self.log_debug(f"🚨 [시스템 치명적 오류 방어됨]\n{err_msg}")
+        except:
+            print(f"치명적 오류: {err_msg}")
+
     def load_settings(self):
         """앱 시작 시 config.json 파일에서 설정값을 불러옵니다."""
         config_path = "./skills/mop_config.json"
@@ -520,9 +758,11 @@ class MOPApp(ctk.CTk):
                 if "mem_turns" in config: self.mem_turns_var.set(config["mem_turns"])
                 if "mem_chars" in config: self.mem_chars_var.set(config["mem_chars"])
                 if "auto_approve" in config: self.auto_approve_var.set(config["auto_approve"])
+                if "plan_mode" in config: self.plan_mode_var.set(config["plan_mode"])
                 if "show_think" in config: self.show_think_var.set(config["show_think"])
                 if "max_retry" in config: self.max_retry_var.set(config["max_retry"])
                 if "user_instruction" in config: self.user_instruction = config["user_instruction"]
+                if "learned_principles" in config: self.learned_principles = config["learned_principles"]
             except Exception as e:
                 self.log_debug(f"설정 불러오기 실패: {e}")
         else:
@@ -543,9 +783,11 @@ class MOPApp(ctk.CTk):
             "mem_turns": self.mem_turns_var.get(),
             "mem_chars": self.mem_chars_var.get(),
             "auto_approve": self.auto_approve_var.get(),
+            "plan_mode": self.plan_mode_var.get(),
             "show_think": self.show_think_var.get(),
             "max_retry": self.max_retry_var.get(),
-            "user_instruction": self.user_instruction
+            "user_instruction": self.user_instruction,
+            "learned_principles": self.learned_principles
         }
         try:
             os.makedirs(os.path.dirname(config_path), exist_ok=True)
@@ -555,93 +797,116 @@ class MOPApp(ctk.CTk):
             print(f"설정 저장 실패: {e}")
     
     def auto_optimize_settings(self, manual_click=False):
-        """시스템 환경(CPU, GPU)을 분석하여 최적의 슬라이더 값을 추천하고 적용합니다."""
+        """시스템 환경(CPU, GPU, RAM)을 분석하여 최적의 슬라이더 값을 추천하고 적용합니다."""
         import os
+        import psutil # 👈 시스템 RAM 감지용
         
-        # 1. CPU 스레드 최적화 (코어 수 - 1개로 세팅하여 OS 다운 방지)
+        # 1. CPU 코어 및 시스템 RAM 기반 '기억력(Context)' 최적화
         cpu_count = os.cpu_count() or 4
-        optimal_threads = max(1, cpu_count - 1)
+        optimal_threads = max(1, int(cpu_count/2))  # CPU 코어 수의 절반을 권장 (과부하 방지)
         
-        # 기본값 (저사양/CPU 전용 기준)
+        # 시스템 RAM (GB) 계산
+        ram_gb = psutil.virtual_memory().total / (1024**3)
+        
+        # RAM 용량에 따른 컨텍스트, 최대 토큰, 글자 수 제한 설정
+        if ram_gb >= 25:     # 32GB 이상 (매우 넉넉함)
+            optimal_n_ctx = 8192
+            optimal_max_tokens = 2048
+            optimal_mem_turns = 15
+            optimal_mem_chars = 12000
+        elif ram_gb >= 10:   # 16GB 이상 (표준)
+            optimal_n_ctx = 4096
+            optimal_max_tokens = 1024
+            optimal_mem_turns = 10
+            optimal_mem_chars = 6000
+        else:                # 8GB 이하 (타이트함)
+            optimal_n_ctx = 2048
+            optimal_max_tokens = 512
+            optimal_mem_turns = 5
+            optimal_mem_chars = 3000
+            
         optimal_gpu_layers = 0
-        optimal_n_ctx = 2048
-        optimal_mem_turns = 8
-        optimal_mem_chars = 4000
-        gpu_info = "CPU 전용 모드"
+        gpu_info = "GPU 인식 실패 (CPU 모드)"
         
-        # 2. GPU VRAM 감지 및 최적화
+        # 2. GPU VRAM 기반 '연산력(Offload)' 최적화
         try:
             import pynvml
             pynvml.nvmlInit()
-            handle = pynvml.nvmlDeviceGetHandleByIndex(0) # 첫 번째 GPU
+            device_count = pynvml.nvmlDeviceGetCount()
+            
+            if device_count == 0:
+                raise Exception("활성화된 NVIDIA 장치가 0개입니다.")
+                
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            gpu_name = pynvml.nvmlDeviceGetName(handle)
+            if isinstance(gpu_name, bytes): gpu_name = gpu_name.decode('utf-8')
+            
             info = pynvml.nvmlDeviceGetMemoryInfo(handle)
             vram_gb = float(info.total) / (1024**3)
             pynvml.nvmlShutdown()
             
-            gpu_name = pynvml.nvmlDeviceGetName(handle)
-            if isinstance(gpu_name, bytes): gpu_name = gpu_name.decode('utf-8')
-            
             gpu_info = f"{gpu_name} (VRAM: {vram_gb:.1f}GB)"
             
-            if vram_gb >= 12:    # 고사양 (12GB 이상)
+            # VRAM 용량에 따른 GPU 오프로드 층 수 설정
+            if vram_gb >= 12:    
                 optimal_gpu_layers = 100
-                optimal_n_ctx = 8192
-                optimal_mem_turns = 15
-                optimal_mem_chars = 8000
-            elif vram_gb >= 8:   # 중사양 (8GB)
+            elif vram_gb >= 8:   
                 optimal_gpu_layers = 35
-                optimal_n_ctx = 4096
-                optimal_mem_turns = 10
-                optimal_mem_chars = 6000
-            else:                # 저사양 (4~6GB)
+            else:                # 4GB (RTX 3050 등)
                 optimal_gpu_layers = 20
-                optimal_n_ctx = 2048
                 
         except ImportError:
-            gpu_info = "GPU 감지 불가 (pynvml 미설치)"
+            gpu_info = "GPU 감지 불가 (pip install pynvml 필요)"
         except Exception as e:
-            gpu_info = f"GPU 인식 실패: CPU 모드 작동"
-            self.log_debug(f"NVIDIA 드라이버 오류: {e}")
+            gpu_info = f"GPU 인식 실패 (사유: {str(e)})"
+            self.log_debug(f"GPU 인식 오류 상세: {e}")
 
         # 3. UI 슬라이더 변수에 추천값 강제 주입
         self.n_threads_var.set(optimal_threads)
         self.gpu_layers_var.set(optimal_gpu_layers)
         self.n_ctx_var.set(optimal_n_ctx)
+        self.max_tokens_var.set(optimal_max_tokens)  # 👇 출력 토큰 자동 조절
         self.mem_turns_var.set(optimal_mem_turns)
         self.mem_chars_var.set(optimal_mem_chars)
         
-        # 4. 결과 보고
-        msg = f"✨ 시스템 최적화 완료\n- 감지된 환경: {gpu_info}, CPU {cpu_count}코어\n- 추천 세팅: {optimal_gpu_layers} GPU Layers, {optimal_threads} Threads"
+        # 4. 결과 보고 포맷 업데이트
+        msg = (f"✨ 시스템 최적화 완료\n"
+               f"- 감지된 환경: {gpu_info}, RAM {ram_gb:.1f}GB, CPU {cpu_count}코어\n"
+               f"- 추천 세팅: {optimal_gpu_layers} Layers, {optimal_n_ctx} Context, {optimal_max_tokens} Tokens")
         
         self.log_debug(msg)
-        if manual_click: # 사용자가 버튼을 눌렀을 때만 채팅창에 안내
+        if manual_click: 
             self.append_chat(f"\n[⚙️ 하드웨어 스캔 및 최적화 적용]\n{msg}\n", "system", force_scroll=True)
+
             
 
     # --- [하드웨어 승인 모달 팝업] ---
-    def ask_hardware_approval(self, tool_name):
+    def ask_security_approval(self, title, message):
+        """다목적 보안 승인(품질 게이트) 팝업을 띄우고 결과를 반환합니다."""
         self.approval_event.clear()
-        self.after(0, self._show_approval_dialog, tool_name)
+        self.after(0, self._show_security_dialog, title, message)
         self.approval_event.wait()
         return self.approval_result
 
-    def _show_approval_dialog(self, tool_name):
+    def _show_security_dialog(self, title, message):
         dialog = ctk.CTkToplevel(self)
-        dialog.title("보안 승인")
-        dialog.geometry("300x150")
+        dialog.title(title)
+        dialog.geometry("450x250")
         dialog.attributes("-topmost", True)
         
-        ctk.CTkLabel(dialog, text=f"⚠️ 하드웨어 제어 요청:\n{tool_name}\n허용하시겠습니까?").pack(pady=20)
+        # 메시지가 길면 자동으로 줄바꿈 처리
+        ctk.CTkLabel(dialog, text=message, wraplength=400, justify="left", font=ctk.CTkFont(size=13)).pack(pady=20, padx=20)
+        
         btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
-        btn_frame.pack()
+        btn_frame.pack(side="bottom", pady=20)
         
         def on_click(res):
             self.approval_result = res
             self.approval_event.set()
             dialog.destroy()
 
-        ctk.CTkButton(btn_frame, text="승인 (Y)", command=lambda: on_click(True), width=80).pack(side="left", padx=10)
-        ctk.CTkButton(btn_frame, text="거절 (N)", command=lambda: on_click(False), fg_color="red", hover_color="darkred", width=80).pack(side="right", padx=10)
+        ctk.CTkButton(btn_frame, text="✅ 승인 (진행)", command=lambda: on_click(True), fg_color="#4CAF50", hover_color="#388E3C", width=120).pack(side="left", padx=15)
+        ctk.CTkButton(btn_frame, text="❌ 거절 (차단)", command=lambda: on_click(False), fg_color="#D32F2F", hover_color="#B71C1C", width=120).pack(side="right", padx=15)
 
     # --- [3. AI 핵심 추론 및 도구 실행 루프] ---
     def finalize_task_retrospective(self):
@@ -663,7 +928,7 @@ class MOPApp(ctk.CTk):
             "type": "function",
             "function": {
                 "name": "save_principle",
-                "description": "학습된 1문장 원칙을 시스템 프롬프트에 저장합니다.",
+                "description": "학습된 1문장 원칙을 프롬프트에 저장합니다.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -704,18 +969,18 @@ class MOPApp(ctk.CTk):
             new_principle = new_principle.replace('\n', ' ').replace('"', '').replace("'", "")
             
             if new_principle and "없음" not in new_principle and len(new_principle) > 5:
-                if "[학습된 자가 원칙]" not in self.engine.custom_system_prompt:
-                    self.engine.custom_system_prompt += "\n\n[학습된 자가 원칙]\n"
-                
+                # 👇 [수정] 영구 저장 변수에 새로운 원칙을 누적합니다.
                 new_line = f"- {new_principle} ({datetime.date.today()})\n"
-                self.engine.custom_system_prompt += new_line
+                self.learned_principles += new_line
                 
-                # 현재 활성 대화의 시스템 메시지도 함께 갱신 (실시간 반영)
+                # 현재 활성 대화의 시스템 메시지도 즉시 갱신
                 if self.engine.messages and self.engine.messages[0]["role"] == "system":
-                    self.engine.messages[0]["content"] = self.engine.custom_system_prompt
+                    static_rules = self.engine.get_default_system_prompt()
+                    combined_prompt = f"{static_rules}\n\n[사용자 지정 페르소나 및 지침]\n{self.user_instruction}\n\n[학습된 자가 원칙]\n{self.learned_principles}"
+                    self.engine.messages[0]["content"] = combined_prompt
 
-                self.save_settings() 
-                self.log_debug(f"✨ JSON 데이터화 기반의 새로운 원칙이 학습되었습니다: {new_principle}")
+                self.save_settings() # 이제 완벽하게 config.json에 저장됩니다!
+                self.log_debug(f"✨ 새로운 원칙이 학습되고 영구 저장되었습니다: {new_principle}")
                 
         except Exception as e:
             self.log_debug(f"사후 회고 도구 처리 중 오류 발생: {e}")
@@ -738,16 +1003,46 @@ class MOPApp(ctk.CTk):
             self.log_debug("⚡ '-f' 플래그 감지: 자동 승인 활성화")
 
         self.engine.archive_to_sqlite("user", query)
-        static_rules = self.engine.get_default_system_prompt() # 우리가 공들여 만든 1~14번 원칙
-        combined_prompt = f"{static_rules}\n\n[사용자 지정 페르소나 및 지침]\n{self.user_instruction}"
+        
+        # 👇 [추가] Plan Mode가 켜져 있으면 에이전트에게 사전 경고를 줍니다.
+        plan_warning = ""
+        if self.plan_mode_var.get():
+            plan_warning = "\n[⚠️ 현재 Plan Mode(안전 모드) 켜짐: 시스템 변경, 파일 쓰기, 명령어 실행 등 위험한 도구를 사용하기 전, 반드시 당신의 '작업 계획'을 사용자에게 브리핑하고 동의를 구해야 합니다.]\n"
+
+        static_rules = self.engine.get_default_system_prompt()
+        
+        # 👇 [신규 패치] 현재 작업 디렉토리(CWD)를 스캔하여 로컬 규칙 파일 읽어오기
+        local_rules_text = ""
+        local_rules_path = os.path.join(os.getcwd(), ".mop_rules.md")
+        if os.path.exists(local_rules_path):
+            try:
+                with open(local_rules_path, 'r', encoding='utf-8') as f:
+                    local_content = f.read().strip()
+                    if local_content:
+                        local_rules_text = f"\n\n[현재 프로젝트 맞춤 지침 ({os.getcwd()})]\n{local_content}"
+                        self.log_debug("📂 현재 디렉토리의 .mop_rules.md 맞춤 지침을 뇌에 주입했습니다.")
+            except Exception as e:
+                self.log_debug(f"⚠️ 로컬 규칙 파일 읽기 실패: {e}")
+
+        # 👇 [신규 패치] 학습된 자가 원칙 (있을 경우만)
+        learned_text = f"\n\n[학습된 자가 원칙]\n{self.learned_principles}" if hasattr(self, 'learned_principles') and self.learned_principles.strip() else ""
+
+        # 👇 [수정] 위에서 수집한 5가지 뇌 구조(기본 + 유저 지침 + 안전 경고 + 로컬 지침 + 학습 원칙)를 완벽하게 하나로 융합!
+        combined_prompt = f"{static_rules}\n\n[사용자 지정 페르소나 및 지침]\n{self.user_instruction}{plan_warning}{local_rules_text}{learned_text}"
         
         if not self.engine.messages:
             self.engine.messages.append({"role": "system", "content": combined_prompt})
         else:
             # 이미 대화 중이라도 시스템 프롬프트는 최신화된 병합본으로 유지
             self.engine.messages[0]["content"] = combined_prompt
+            
+        # AI의 뇌(문맥)에 사용자의 실제 명령 추가
+        self.engine.messages.append({"role": "user", "content": query})
         
         consecutive_error_count = 0
+        
+        last_tc_name = ""
+        last_tc_args = ""
         
         while True:
             # 1. 동적 문맥 압축기 (UI 설정값 연동)
@@ -801,6 +1096,10 @@ class MOPApp(ctk.CTk):
             is_tool_call = False
 
             for chunk in stream:
+                # 👇 [핵심 패치] 스트리밍 도중 정지 버튼이 눌렸다면 즉시 루프 파괴!
+                if self.stop_generation_flag:
+                    break
+                    
                 choices = chunk.get("choices", [])
                 if choices:
                     delta = choices[0].get("delta", {})
@@ -829,6 +1128,17 @@ class MOPApp(ctk.CTk):
 
             self.append_chat("\n")
 
+            # 👇 [핵심 패치] 정지 버튼으로 빠져나왔을 때의 사후 처리
+            if self.stop_generation_flag:
+                self.append_chat("\n[🛑 사용자 요청으로 생성이 강제 중단되었습니다.]\n", "system")
+                
+                # 쓰다 만 말이라도 문맥이 꼬이지 않도록 뇌에 기록해둡니다.
+                if assistant_content.strip():
+                    self.engine.archive_to_sqlite("assistant", assistant_content.strip() + " [중단됨]")
+                    self.engine.messages.append({"role": "assistant", "content": assistant_content.strip() + " [중단됨]"})
+                
+                break
+
             # 3. JSON 수동 추출
             if not is_tool_call:
                 # 👇 [수정] 무식한 replace 대신 완벽한 html unescape 사용
@@ -848,44 +1158,90 @@ class MOPApp(ctk.CTk):
                         self.log_debug(f"🔧 누락된 JSON 닫는 괄호 {missing_count}개를 자동 복구했습니다.")
 
                     try:
+                        # 1차 시도: 표준 JSON 파싱
                         parsed = json.loads(json_str)
+                    except json.JSONDecodeError:
+                        # 👇 [핵심 패치] 2차 시도: AI가 홑따옴표(')를 사용해 JSON이 깨졌을 경우,
+                        # 파이썬의 ast.literal_eval을 사용해 파이썬 딕셔너리 형태로 강제 번역하여 구출합니다!
+                        try:
+                            import ast
+                            parsed = ast.literal_eval(json_str)
+                            self.log_debug("🔧 홑따옴표 단일 오류를 ast.literal_eval로 자동 복구했습니다.")
+                        except Exception as e:
+                            # 1, 2차 모두 실패하면 원래대로 에러 반환
+                            raise Exception(f"JSON 파싱 실패 (ast 복구 불가): {str(e)}")
+                    
+                    try:    
+                        # (파싱 성공 이후 기존 로직 유지)
                         if isinstance(parsed, list): parsed = parsed[0]
                         if isinstance(parsed, dict) and (parsed.get("name") or parsed.get("tool")):
                             is_tool_call = True
                             tc_name = parsed.get("name") or parsed.get("tool")
                             tc_args = json.dumps(parsed.get("arguments") or parsed.get("parameters", parsed))
                     except Exception as e:
-                        # 👇 [핵심 패치] 파이썬의 실제 에러 메시지(e)를 캡처해서 AI에게 전달할 준비를 합니다.
+                        # 구조가 아예 박살 난 경우 (AI에게 피드백)
                         is_tool_call = True
                         tc_name = "json_syntax_error"
-                        tc_args = json.dumps({"error_detail": str(e)}) 
+                        tc_args = json.dumps({"error_detail": str(e)})
 
                 self.engine.archive_to_sqlite("assistant", assistant_content.strip())
-
+                
             # 4. 도구 실행 루틴
             if is_tool_call:
+                # 👇 [핵심 패치] 방금 전에 했던 똑같은 짓을 또 하려고 하면 강제 탈출!
+                if tc_name == last_tc_name and tc_args == last_tc_args:
+                    self.log_debug("🔄 [서킷 브레이커 발동] 동일한 도구 연속 호출(무한 루프)이 감지되어 작업을 강제 종료합니다.")
+                    self.append_chat("\n[🛑 동일 작업 무한 반복이 감지되어 시스템이 개입하여 작업을 종료했습니다.]\n", "system")
+                    break # 루프 파괴!
+                
+                # 이번 턴의 기록을 '과거 기록'으로 갱신
+                last_tc_name = tc_name
+                last_tc_args = tc_args
+
                 self.log_debug(f"🛠️ 도구 호출 감지: {tc_name}")
+                # 👇 [수정] 복잡한 tool_calls 속성을 빼고 순수 텍스트만 기록하여 모델 에러를 방지합니다.
                 self.engine.messages.append({
-                    "role": "assistant", "content": assistant_content.strip() or None,
-                    "tool_calls": [{"id": "call_id", "type": "function", "function": {"name": tc_name, "arguments": tc_args}}]
+                    "role": "assistant", "content": assistant_content.strip()
                 })
                 
                 tool_result = ""
                 try:
                     args_dict = json.loads(tc_args)
+                    
+                    # 👇 [핵심 패치] 품질 게이트 심사
+                    dangerous_tools = ["run_shell_command", "edit_file", "append_to_file", "write_memory", "start_background_task", "run_python_snippet", "manage_packages"]
+                    is_rejected_by_gate = False
+                    
+                    # 위험한 도구이고, Plan Mode가 켜져 있다면 (-f 여부와 상관없이) 무조건 모달을 띄움
+                    if tc_name in dangerous_tools and self.plan_mode_var.get():
+                        self.log_debug(f"🛡️ Plan Mode 절대 방어 작동: {tc_name} 승인 대기 중...")
+                        preview_args = str(args_dict)[:150] + ("..." if len(str(args_dict)) > 150 else "")
+                        msg = f"⚠️ AI가 시스템을 수정하려고 합니다.\n\n[도구]: {tc_name}\n[파라미터]: {preview_args}\n\n이 실행을 승인하시겠습니까?"
+                        
+                        approved = self.ask_security_approval("Plan Mode 실행 승인", msg)
+                        
+                        if not approved:
+                            tool_result = "❌ [품질 게이트 거절됨]: 사용자가 보안상의 이유로 도구 실행을 차단했습니다. 작업을 중단하고, 왜 거절되었는지 묻거나 다른 안전한 대안(읽기/검색 등)을 제시하세요."
+                            is_rejected_by_gate = True
                     if tc_name == "json_syntax_error":
                         # 👇 [핵심 패치] AI에게 정확히 왜 깨졌는지 상세 에러를 보여줍니다.
                         detail = args_dict.get("error_detail", "알 수 없음")
                         tool_result = f"오류: JSON 문법이 깨졌습니다. (파이썬 에러: {detail})\n쌍따옴표(\")나 이스케이프(\\) 처리에 문제가 없는지 확인하고 올바른 형식으로 다시 제출하세요."
                     
-                    # 위험 도구 (마우스/키보드)
+                    elif is_rejected_by_gate:
+                        pass 
+                        
                     elif tc_name in ["control_mouse", "control_keyboard"]:
                         if auto_approve_this_turn:
                             self.log_debug(f"⚠️ 자동 승인으로 패스: {tc_name}")
                             approved = True
                         else:
-                            self.log_debug(f"보안 승인 대기 중...")
-                            approved = self.ask_hardware_approval(tc_name)
+                            self.log_debug(f"🛡️ 하드웨어 제어 승인 대기 중...")
+                            # 👇 [핵심 패치] 방금 만든 새롭고 넓은 범용 팝업 함수로 교체합니다!
+                            approved = self.ask_security_approval(
+                                title="하드웨어 제어 승인", 
+                                message=f"⚠️ AI가 물리적 마우스/키보드를 제어하려고 합니다.\n\n[도구]: {tc_name}\n\n이 실행을 승인하시겠습니까?"
+                            )
                         
                         if approved:
                             script_path = os.path.join(".", "skills", "computer_tools.py")
@@ -920,6 +1276,18 @@ class MOPApp(ctk.CTk):
                                 with open(f_path, 'w', encoding='utf-8') as f: f.write(content.replace(s_str, r_str))
                                 tool_result = f"성공: '{f_path}' 교체 완료."
                         except Exception as e: tool_result = f"오류: 파일 수정 실패 - {e}"
+                    elif tc_name == "start_background_task": 
+                        tool_result = self.engine.start_background_task(args_dict.get("command", ""))
+                    elif tc_name == "check_task_status": 
+                        tool_result = self.engine.check_task_status(args_dict.get("task_id", ""))
+                        
+                    # 👇 [추가] 서브에이전트 라우팅
+                    elif tc_name == "delegate_to_sub_agent":
+                        tool_result = self.engine.run_sub_agent(
+                            instruction=args_dict.get("instruction", ""),
+                            file_path=args_dict.get("file_path", ""),
+                            input_data=args_dict.get("input_data", "")
+                        )
                     elif tc_name == "append_to_file":
                         f_path = args_dict.get("file_path", "")
                         
@@ -932,6 +1300,22 @@ class MOPApp(ctk.CTk):
                             tool_result = f"성공: '{f_path}' 파일 끝에 코드 조각이 안전하게 추가되었습니다."
                         except Exception as e:
                             tool_result = f"오류: 코드 누적 실패 - {e}"
+                    elif tc_name == "save_principle":
+                        new_principle = args_dict.get("principle", "").strip()
+                        if new_principle:
+                            new_line = f"- {new_principle} ({datetime.date.today()})\n"
+                            self.learned_principles += new_line
+                            
+                            # AI 뇌 즉시 갱신
+                            if self.engine.messages and self.engine.messages[0]["role"] == "system":
+                                static_rules = self.engine.get_default_system_prompt()
+                                combined_prompt = f"{static_rules}\n\n[사용자 지정 페르소나 및 지침]\n{self.user_instruction}\n\n[학습된 자가 원칙]\n{self.learned_principles}"
+                                self.engine.messages[0]["content"] = combined_prompt
+                            
+                            self.save_settings()
+                            tool_result = f"성공: 자가 원칙에 '{new_principle}' 내용이 영구적으로 추가되었습니다. 이제 이 원칙을 절대 잊지 않습니다."
+                        else:
+                            tool_result = "오류: 원칙 내용이 비어있습니다."
                     else: tool_result = f"알 수 없는 도구: {tc_name}"
                     
 
@@ -942,7 +1326,7 @@ class MOPApp(ctk.CTk):
                     self.log_debug("결과가 너무 길어 메모리 최적화 수행")
                     tool_result = tool_result[:3000] + "\n...[데이터가 너무 길어 중략됨]...\n" + tool_result[-3000:]
 
-                is_error = any(kw in tool_result.lower() for kw in ["error", "exception", "traceback", "오류", "실패", "fail", "invalid"])
+                is_error = any(kw in tool_result.lower() for kw in ["error", "exception", "traceback", "오류", "실패", "fail", "invalid", "결과가 없습"])
                 
                 if is_error:
                     consecutive_error_count += 1
@@ -971,6 +1355,7 @@ class MOPApp(ctk.CTk):
                         "4. (검색 강제): 원인을 모르면 즉시 'search_web'으로 구글링하세요.\n"
                         "5. 수정된 코드 조각만 다시 제출하여 작업을 이어가세요. 변명하지 마세요."
                     )
+                # 👇 [수정] 성공 시에도 AI에게 다음 단계를 독촉하는 문구를 강화합니다.
                 else:
                     consecutive_error_count = 0
                     current_step_count += 1
@@ -978,28 +1363,47 @@ class MOPApp(ctk.CTk):
                     
                     self.append_chat(f"\n[✅ {current_step_count}단계 작업 완료: {tc_name}]\n", "system")
                     
-                    # 👇 [핵심 패치] 성공한 작업의 내용을 일지에 기록하여 다음 턴의 '기준'으로 삼게 함
                     enforced_result = (
-                        f"[작업 {current_step_count}단계 결과 및 완수 확인]\n{tool_result}\n\n"
-                        "---[시스템 작업 일지]---\n"
-                        f"- 현재까지 총 {current_step_count}개의 세부 작업이 성공적으로 완료되었습니다.\n"
-                        f"- 마지막으로 성공한 도구: {tc_name}\n"
-                        "- [지시]: 다음 단계로 넘어가기 전, 방금의 결과가 파일이나 메모리에 실제 반영되었는지 '검증'이 필요하다면 확인 도구를 먼저 쓰세요. 이미 완료된 작업을 절대 반복하지 마세요."
+                        f"[작업 {current_step_count}단계 결과: '{tc_name}' 실행 성공]\n{tool_result}\n\n"
+                        "---[실행 지침]---\n"
+                        f"1. 사용자의 전체 요청 중 아직 수행하지 않은 단계가 있는지 체크리스트를 확인하세요.\n"
+                        "2. 남은 작업이 있다면 즉시 다음 도구를 호출하세요.\n"
+                        "3. 모든 단계가 끝났을 때만 최종 보고를 하고 종료하세요. 절대로 중간에 멈추지 마세요."
                     )
 
-                self.engine.messages.append({"role": "tool", "tool_call_id": "call_id", "name": tc_name, "content": enforced_result})
+                self.engine.messages.append({
+                    "role": "user", 
+                    "content": f"💻 [시스템 런타임 보고: '{tc_name}' 도구 실행 결과]\n{enforced_result}"
+                })
                 continue
             
             task_completed_successfully = True # 루프를 정상적으로 빠져나오면 성공으로 간주
             break
 
         # 👇 [추가] 루프 종료 후 성공했다면 사후 회고 실행
-        if task_completed_successfully and consecutive_error_count == 0:
+        if task_completed_successfully and consecutive_error_count == 0 and not self.stop_generation_flag:
             threading.Thread(target=self.finalize_task_retrospective, daemon=True).start()
 
         gc.collect()
-        self.after(0, lambda: self.send_btn.configure(state="normal"))
+        
+        # 👇 [수정] 모든 작업이 끝나면 버튼을 다시 원래의 '전송' 버튼으로 되돌립니다.
+        self.after(0, self.set_ui_idle_state)
 
 if __name__ == "__main__":
-    app = MOPApp()
-    app.mainloop()
+    import time
+    
+    # 앱이 비정상 종료되어도 계속 다시 살아나는 불사조 루프
+    while True:
+        try:
+            app = MOPApp()
+            app.mainloop()
+            
+            # 사용자가 정상적으로 창을 닫은 경우 (안전한 종료)
+            print("MOP 시스템이 정상적으로 종료되었습니다.")
+            break 
+            
+        except Exception as e:
+            # 알 수 없는 치명적 오류로 앱이 터진 경우 3초 뒤 자동 재시작
+            print(f"🔥 치명적 오류 발생! 앱이 뻗었습니다: {e}")
+            print("🔄 3초 뒤 MOP 시스템을 자동으로 재가동합니다...")
+            time.sleep(3)
