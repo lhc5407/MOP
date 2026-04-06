@@ -536,54 +536,74 @@ class MOPApp(ctk.CTk):
 
     # --- [3. AI 핵심 추론 및 도구 실행 루프] ---
     def finalize_task_retrospective(self):
-        """작업 성공 후, 새로운 스킬이나 원칙을 도출하여 시스템 프롬프트에 패치합니다."""
+        """작업 성공 후, 단일 도구 호출을 강제하여 정형화된 원칙 데이터를 추출하고 패치합니다."""
         
-        # [Pylance 대응 1] llm 인스턴스가 None인지 확인 (Optional Member Access 방어)
         if self.engine.llm is None:
             return
             
         self.log_debug("🧐 작업 완료 후 사후 회고 및 시스템 개선 중...")
         
-        # [Pylance 대응 2] 리스트 복사 및 타입 힌트 명확화
         retrospective_msg: List[Dict[str, Any]] = list(self.engine.messages)
         retrospective_msg.append({
             "role": "user", 
-            "content": "방금 수행한 작업을 복기해봐. 다음에 비슷한 요청을 받았을 때 더 효율적으로 일하기 위해 '시스템 프롬프트'에 추가할 새로운 '작업 원칙'이나 '꿀팁'이 있다면 딱 한 문장으로 제안해줘. (없다면 '없음'이라고 답해)"
+            "content": "방금 수행한 작업을 복기하여, 다음 작업을 위한 핵심 원칙이나 꿀팁 1문장을 도출하세요. 반드시 'save_principle' 도구를 호출하여 결과를 저장하세요. (없다면 '없음'으로 저장하세요)"
         })
         
+        # 회고 전용 단일 도구 정의
+        retro_tool = [{
+            "type": "function",
+            "function": {
+                "name": "save_principle",
+                "description": "학습된 1문장 원칙을 시스템 프롬프트에 저장합니다.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "principle": {"type": "string", "description": "도출된 1문장 작업 원칙"}
+                    },
+                    "required": ["principle"]
+                }
+            }
+        }]
+        
         try:
-            # [Pylance 대응 3] 반환 타입을 Dict로 캐스팅하고 stream=False 명시
+            # tool_choice를 통해 save_principle 호출을 무조건 강제함
             resp = cast(Dict[str, Any], self.engine.llm.create_chat_completion(
                 messages=cast(Any, retrospective_msg),
-                max_tokens=150,
-                temperature=0.3,
+                tools=cast(Any, retro_tool),
+                tool_choice={"type": "function", "function": {"name": "save_principle"}},
+                max_tokens=1024,
+                temperature=0.1,
                 stream=False
             ))
             
-            # [Pylance 대응 4] 딕셔너리 안전 접근 (.get) 및 None 타입 방어
             choices = resp.get("choices", [])
             if not choices:
                 return
                 
             message = choices[0].get("message", {})
-            content = message.get("content")
+            tool_calls = message.get("tool_calls", [])
             
-            if not content: # content가 None이거나 빈 문자열인 경우 방어
+            if not tool_calls:
                 return
                 
-            new_principle = str(content).strip()
+            # 강제된 JSON 응답에서 안전하게 값만 추출
+            tc = tool_calls[0]
+            args_str = tc.get("function", {}).get("arguments", "{}")
+            args_dict = json.loads(args_str)
+            new_principle = args_dict.get("principle", "").strip()
             
-            if new_principle and "없음" not in new_principle:
-                # 시스템 프롬프트 하단에 '학습된 원칙' 섹션 추가/갱신
+            new_principle = new_principle.replace('\n', ' ').replace('"', '').replace("'", "")
+            
+            if new_principle and "없음" not in new_principle and len(new_principle) > 5:
                 if "[학습된 자가 원칙]" not in self.engine.custom_system_prompt:
                     self.engine.custom_system_prompt += "\n\n[학습된 자가 원칙]\n"
                 
                 self.engine.custom_system_prompt += f"- {new_principle} ({datetime.date.today()})\n"
-                self.save_settings() # 변경된 프롬프트를 config.json에 즉시 저장
-                self.log_debug(f"✨ 새로운 원칙이 학습되었습니다: {new_principle}")
+                self.save_settings() 
+                self.log_debug(f"✨ JSON 데이터화 기반의 새로운 원칙이 학습되었습니다: {new_principle}")
                 
         except Exception as e:
-            self.log_debug(f"사후 회고 중 오류 발생: {e}")
+            self.log_debug(f"사후 회고 도구 처리 중 오류 발생: {e}")
     
     def ai_response_task(self, query):
         if self.engine.llm is None:
@@ -611,20 +631,33 @@ class MOPApp(ctk.CTk):
             # 1. 동적 문맥 압축기 (UI 설정값 연동)
             ctx_len = sum(len(str(m.get('content', ''))) for m in self.engine.messages)
             
-            # 👇 [수정] mem_turns_var와 mem_chars_var 안전 호출
-            safe_mem_turns = self.get_safe_int(self.mem_turns_var, 20)
-            safe_mem_chars = self.get_safe_int(self.mem_chars_var, 12000)
+            # 1. 동적 문맥 압축기 (UI 설정값 연동 및 연속 압축 적용)
+            safe_mem_turns = self.get_safe_int(self.mem_turns_var, 10)
+            safe_mem_chars = self.get_safe_int(self.mem_chars_var, 8000)
             
-            if len(self.engine.messages) > safe_mem_turns or ctx_len > safe_mem_chars:
-                self.log_debug(f"메모리 최적화 시작 (현재: {len(self.engine.messages)}턴, {ctx_len}자)")
+            # 👇 [핵심 패치] if 대신 while을 사용하여 안전권에 들어올 때까지 과거 기억을 계속 압축
+            while True:
+                ctx_len = sum(len(str(m.get('content', ''))) for m in self.engine.messages)
+                
+                # 안전한 용량(턴 수 & 글자 수)이거나, 메시지가 시스템 프롬프트+현재질문(2개)뿐이면 압축 종료
+                if (len(self.engine.messages) <= safe_mem_turns and ctx_len <= safe_mem_chars) or len(self.engine.messages) <= 2:
+                    break
+                    
+                self.log_debug(f"🧹 메모리 연속 압축 중... (현재: {len(self.engine.messages)}턴, {ctx_len}자)")
+                
                 end_idx = 2
+                # 다음 사용자(user) 메시지를 찾을 때까지 인덱스 전진
                 while end_idx < len(self.engine.messages) and self.engine.messages[end_idx].get('role') != 'user':
                     end_idx += 1
+                    
                 if end_idx < len(self.engine.messages):
                     for msg in self.engine.messages[1:end_idx]:
                         if msg.get('role') in ['user', 'assistant'] and msg.get('content'):
                             self.engine.archive_to_sqlite(msg['role'], msg['content'])
+                    # 시스템 프롬프트(0) + 다음 대화 블록(end_idx 이후)으로 갱신
                     self.engine.messages = [self.engine.messages[0]] + self.engine.messages[end_idx:]
+                else:
+                    break # 더 이상 자를 기준이 없으면 강제 탈출
 
             self.append_chat("\n🤖 AI: ", "ai")
             
