@@ -1,3 +1,4 @@
+import html
 import customtkinter as ctk
 from tkinter import filedialog
 import datetime
@@ -139,13 +140,17 @@ class MOPEngine:
             "7. [누적형 코딩 프로토콜]: 길이가 긴 파이썬 코드를 작성해야 할 경우, run_python_snippet으로 한 번에 출력하려다 토큰 제한에 걸려 잘리지 마세요. 대신 append_to_file 도구를 사용하여 workspace.py 같은 파일에 '1단계: 모듈 임포트', '2단계: 데이터 수집', '3단계: 로직 계산' 식으로 여러 번에 걸쳐 코드를 누적해 나가세요. 작성이 모두 끝나면 run_shell_command로 python workspace.py를 실행하여 통합 결과를 도출하세요.\n"
             "8. [단계별 체크포인트 전략]: 에러가 발생하면 전체 파일을 다시 처음부터 쓰지 마세요. 시스템이 알려주는 '실패 단계'를 확인하고, 해당 부분의 로직만 수정하여 다시 이어 붙이거나(Append) 패치(Edit) 하세요. 당신은 이전에 성공한 단계의 데이터를 신뢰할 수 있습니다.\n"
             "9. [토큰 낭비 방지]: 절대 <think> 태그를 사용하여 속마음을 출력하지 마세요. 불필요한 독백을 생략하고 즉시 도구 호출 JSON만 출력하세요.\n"
-            "10. [대기 멘트 금지]: 도구 호출 전후에 '잠시 기다려주세요' 등의 변명을 절대 하지 마세요. 결과를 읽는 즉시 다음 도구를 연속 호출하거나 답변하세요."
+            "10. [대기 멘트 금지]: 도구 호출 전후에 '잠시 기다려주세요' 등의 변명을 절대 하지 마세요. 결과를 읽는 즉시 다음 도구를 연속 호출하거나 답변하세요.\n"
+            "11. [작업 완수 검증 프로토콜]: 새로운 도구를 호출하기 전, 반드시 직전 작업이 실제 시스템(파일 시스템, DB 등)에 반영되었는지 확인하는 습관을 가지세요. 예를 들어 파일을 생성했다면 run_shell_command('dir')로 존재를 확인한 뒤 다음 단계로 넘어가야 합니다. '이미 했다고 가정'하는 환각을 경계하고 물리적인 증거를 바탕으로 사고하세요.\n"
+            "12. [JSON 텍스트 규칙]: append_to_file의 'code' 인자나 control_keyboard의 'text' 인자 등 JSON 내부 문자열을 작성할 때는, 쌍따옴표(\") 충돌 에러를 막기 위해 반드시 홑따옴표(')만을 사용하세요. (예: print('성공'), '테스트 성공!')\n"
+            "13. [시간 인지 강제화]: 시스템이 맨 윗줄에 제공한 '현재 시간'이 이 세계의 절대적인 기준입니다. 당신의 훈련 데이터 시점(과거)을 기준으로 현재 시간을 '미래'라고 판단하거나 변명하지 마세요. 현재 시간을 기준으로 모든 상황을 해석하세요.\n"
+            "14. [글로벌 검색 프로토콜]: search_web 도구를 사용할 때는 사용자의 지시가 한국어라도 반드시 검색어를 영어로 번역해서 도구를 호출하세요. 검색된 영어 원문 데이터를 읽고 나면, 사용자에게 보고하거나 파일에 기록할 때는 완벽하고 자연스러운 한국어로 번역 및 요약해야 합니다."
         )
 
     def get_tools(self):
         # (이전 지시대로 14개 도구가 모두 포함되어 있습니다)
         return [
-            {"type": "function", "function": {"name": "search_web", "description": "인터넷 검색(query)", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
+            {"type": "function", "function": {"name": "search_web", "description": "인터넷 웹 검색을 수행합니다. 방대한 결과 확보를 위해 검색어(query)는 반드시 '영어'로 번역하여 입력하세요. (예: '비트코인 시황' -> 'Bitcoin market latest trends')", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "영어로 번역된 구체적인 검색어"}}, "required": ["query"]}}},
             {"type": "function", "function": {"name": "write_memory", "description": "기억 저장(key, value)", "parameters": {"type": "object", "properties": {"key": {"type": "string"}, "value": {"type": "string"}}, "required": ["key", "value"]}}},
             {"type": "function", "function": {"name": "read_memory", "description": "기억 조회(key)", "parameters": {"type": "object", "properties": {"key": {"type": "string"}}, "required": ["key"]}}},
             {"type": "function", "function": {"name": "search_chat_history", "description": "과거 대화 DB 검색(keyword)", "parameters": {"type": "object", "properties": {"keyword": {"type": "string"}}, "required": ["keyword"]}}},
@@ -217,8 +222,8 @@ class MOPApp(ctk.CTk):
         self.max_tokens_var = ctk.IntVar(value=2048)
         
         # 3. 기억/문맥 제한 설정
-        self.mem_turns_var = ctk.IntVar(value=20)
-        self.mem_chars_var = ctk.IntVar(value=12000)
+        self.mem_turns_var = ctk.IntVar(value=12)
+        self.mem_chars_var = ctk.IntVar(value=10000)
         
         # 4. 도구/권한 설정
         self.auto_approve_var = ctk.BooleanVar(value=False)
@@ -227,6 +232,8 @@ class MOPApp(ctk.CTk):
 
         # 👇 [추가] 모델의 절대 경로를 기억할 전용 변수
         self.full_model_path = "" 
+
+        self.user_instruction = "당신은 사용자님의 유능한 AI 비서입니다."
 
         self.approval_event = threading.Event()
         self.approval_result = False
@@ -244,21 +251,33 @@ class MOPApp(ctk.CTk):
         self.destroy()
 
     # --- [UI 헬퍼 함수: 값 라벨이 달린 슬라이더 생성] ---
-    def add_slider_control(self, parent, label_text, variable, from_, to, steps, fmt="{:.0f}"):
+    def add_slider_control(self, parent, label_text, variable, from_, to, steps, fmt="{:.0f}", help_text=""):
         frame = ctk.CTkFrame(parent, fg_color="transparent")
         frame.pack(fill="x", padx=15, pady=(15, 0))
         
-        # 라벨 및 값 표시
-        ctk.CTkLabel(frame, text=label_text, font=ctk.CTkFont(weight="bold")).pack(side="left")
-        val_lbl = ctk.CTkLabel(frame, text=fmt.format(variable.get()), text_color="#00A2FF", font=ctk.CTkFont(weight="bold"))
+        # 라벨 및 값 표시를 위한 가로 프레임
+        header_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        header_frame.pack(fill="x")
+        
+        ctk.CTkLabel(header_frame, text=label_text, font=ctk.CTkFont(weight="bold")).pack(side="left")
+        val_lbl = ctk.CTkLabel(header_frame, text=fmt.format(variable.get()), text_color="#00A2FF", font=ctk.CTkFont(weight="bold"))
         val_lbl.pack(side="right")
         
-        # 슬라이더 콜백: 움직일 때마다 라벨 업데이트
-        def on_change(v):
-            val_lbl.configure(text=fmt.format(float(v)))
+        def update_label(*args):
+            try:
+                val_lbl.configure(text=fmt.format(variable.get()))
+            except Exception:
+                pass
+                
+        variable.trace_add("write", update_label)
+        
+        slider = ctk.CTkSlider(frame, from_=from_, to=to, number_of_steps=steps, variable=variable)
+        slider.pack(fill="x", pady=(5, 0))
+        
+        # 👇 [추가] 도움말 텍스트가 있으면 슬라이더 아래에 작은 회색 글씨로 표시
+        if help_text:
+            ctk.CTkLabel(frame, text=help_text, font=ctk.CTkFont(size=11), text_color="gray").pack(anchor="w", pady=(2, 0))
             
-        slider = ctk.CTkSlider(parent, from_=from_, to=to, number_of_steps=steps, variable=variable, command=on_change)
-        slider.pack(fill="x", padx=15, pady=(5, 0))
         return slider
 
     def create_sidebar(self):
@@ -269,8 +288,12 @@ class MOPApp(ctk.CTk):
         # --- [1. 모델 및 엔진] ---
         ctk.CTkLabel(sidebar, text="🧠 모델 및 엔진 환경", font=ctk.CTkFont(size=16, weight="bold"), text_color="#00A2FF").pack(pady=(20,10), padx=15, anchor="w")
         
-        self.model_btn = ctk.CTkButton(sidebar, text="모델 선택 (.gguf)", command=self.browse_model)
-        self.model_btn.pack(pady=5, padx=15, fill="x")
+        self.browse_btn = ctk.CTkButton(sidebar, text="📁 모델 찾아보기", command=self.browse_model)
+        self.browse_btn.pack(pady=(0, 10), padx=15, fill="x")
+
+        # 👇 시스템 자동 최적화 버튼 (기존 위치 유지)
+        self.opt_btn = ctk.CTkButton(sidebar, text="⚡ 시스템 자동 최적화", fg_color="#2B2B2B", hover_color="#404040", command=lambda: self.auto_optimize_settings(manual_click=True))
+        self.opt_btn.pack(pady=(0, 10), padx=15, fill="x")
         ctk.CTkLabel(sidebar, textvariable=self.model_path_var, font=("Arial", 11), text_color="gray").pack(padx=15, anchor="w")
         
         # KV 양자화 드롭다운
@@ -279,9 +302,12 @@ class MOPApp(ctk.CTk):
         ctk.CTkLabel(kv_frame, text="KV Cache 양자화", font=ctk.CTkFont(weight="bold")).pack(side="left")
         ctk.CTkOptionMenu(kv_frame, values=["FP16 (고품질)", "Q8_0 (8-bit)", "Q4_0 (4-bit 최대압축)"], variable=self.kv_quant_var).pack(side="right")
 
-        self.add_slider_control(sidebar, "컨텍스트(Context) 창", self.n_ctx_var, 2048, 16384, 7, "{:.0f}")
-        self.add_slider_control(sidebar, "GPU 오프로드 층 수", self.gpu_layers_var, 0, 100, 100, "{:.0f}")
-        self.add_slider_control(sidebar, "CPU 스레드 수", self.n_threads_var, 1, 32, 31, "{:.0f}")
+        self.add_slider_control(sidebar, "컨텍스트(Context) 창", self.n_ctx_var, 2048, 16384, 7, "{:.0f}", 
+                                help_text="크면: 더 긴 대화 기억 (VRAM 🔺)\n작으면: 빠른 로딩, VRAM 절약")
+        self.add_slider_control(sidebar, "GPU 오프로드 층 수", self.gpu_layers_var, 0, 100, 100, "{:.0f}", 
+                                help_text="크면: 생성 속도 대폭 향상 (GPU 🔺)\n작으면: 안정적, CPU 연산 위주")
+        self.add_slider_control(sidebar, "CPU 스레드 수", self.n_threads_var, 1, 32, 31, "{:.0f}", 
+                                help_text="PC의 '물리 코어 수'에 맞출 때 가장 빠릅니다.")
 
         # --- [2. 에이전트 성향] ---
         ctk.CTkFrame(sidebar, height=2, fg_color="gray30").pack(fill="x", padx=15, pady=20)
@@ -289,15 +315,19 @@ class MOPApp(ctk.CTk):
         
         ctk.CTkButton(sidebar, text="📝 시스템 프롬프트 편집", command=self.open_sys_prompt_editor, fg_color="#4CAF50", hover_color="#388E3C").pack(pady=5, padx=15, fill="x")
         
-        self.add_slider_control(sidebar, "창의성 (Temperature)", self.temp_var, 0, 1, 100, "{:.2f}")
-        self.add_slider_control(sidebar, "최대 출력 제한 (Tokens)", self.max_tokens_var, 256, 4096, 15, "{:.0f}")
+        self.add_slider_control(sidebar, "창의성 (Temperature)", self.temp_var, 0, 1, 100, "{:.2f}", 
+                                help_text="크면: 창의적, 다양한 답변\n작으면: 논리적, 일관됨 (코딩은 0.1 권장)")
+        self.add_slider_control(sidebar, "최대 출력 제한 (Tokens)", self.max_tokens_var, 256, 4096, 15, "{:.0f}", 
+                                help_text="크면: 긴 코드가 중간에 잘리지 않음\n작으면: 응답 완료 속도 향상")
 
         # --- [3. 기억 제한 방어망] ---
         ctk.CTkFrame(sidebar, height=2, fg_color="gray30").pack(fill="x", padx=15, pady=20)
         ctk.CTkLabel(sidebar, text="💾 기억 및 문맥 방어", font=ctk.CTkFont(size=16, weight="bold"), text_color="#00A2FF").pack(pady=(0,10), padx=15, anchor="w")
         
-        self.add_slider_control(sidebar, "단기 기억 한계 (턴 수)", self.mem_turns_var, 5, 50, 45, "{:.0f}")
-        self.add_slider_control(sidebar, "전체 글자 수 제한", self.mem_chars_var, 4000, 24000, 20, "{:.0f}")
+        self.add_slider_control(sidebar, "단기 기억 한계 (턴 수)", self.mem_turns_var, 5, 50, 45, "{:.0f}", 
+                                help_text="크면: 더 예전 대화까지 참고\n작으면: 잦은 압축으로 메모리(RAM) 방어")
+        self.add_slider_control(sidebar, "전체 글자 수 제한", self.mem_chars_var, 4000, 24000, 20, "{:.0f}", 
+                                help_text="크면: 긴 코드를 문맥에 유지\n작으면: 메모리 폭발 완벽 차단")
 
         # --- [4. 도구 권한] ---
         ctk.CTkFrame(sidebar, height=2, fg_color="gray30").pack(fill="x", padx=15, pady=20)
@@ -306,7 +336,8 @@ class MOPApp(ctk.CTk):
         ctk.CTkSwitch(sidebar, text="하드웨어 자동 승인 (-f)", variable=self.auto_approve_var).pack(pady=10, padx=15, anchor="w")
         ctk.CTkSwitch(sidebar, text="사고 과정(<think>) 표출", variable=self.show_think_var).pack(pady=10, padx=15, anchor="w")
         
-        self.add_slider_control(sidebar, "최대 자율 재시도 횟수", self.max_retry_var, 1, 10, 9, "{:.0f}")
+        self.add_slider_control(sidebar, "최대 자율 재시도 횟수", self.max_retry_var, 1, 10, 9, "{:.0f}", 
+                                help_text="크면: 성공할 때까지 끈질긴 디버깅\n작으면: 빠른 포기 후 사용자 SOS")
 
         # 초기화 버튼
         ctk.CTkButton(sidebar, text="대화/단기 기억 완전 초기화", fg_color="#D32F2F", command=self.clear_chat).pack(pady=(40,20), padx=15, fill="x")
@@ -339,7 +370,7 @@ class MOPApp(ctk.CTk):
     # --- [UI 제어 헬퍼 함수] ---
     def open_sys_prompt_editor(self):
         editor = ctk.CTkToplevel(self)
-        editor.title("시스템 프롬프트 편집")
+        editor.title("개인화 지침 편집 (User Instruction)")
         editor.geometry("700x500")
         editor.attributes("-topmost", True)
         
@@ -347,18 +378,13 @@ class MOPApp(ctk.CTk):
         
         textbox = ctk.CTkTextbox(editor, wrap="word", font=ctk.CTkFont(size=13))
         textbox.pack(fill="both", expand=True, padx=20, pady=(0,10))
-        textbox.insert("1.0", self.engine.custom_system_prompt)
+        textbox.insert("1.0", self.user_instruction)
         
         def save_prompt():
-            self.engine.custom_system_prompt = textbox.get("1.0", "end-1c")
-            if self.engine.messages and self.engine.messages[0]["role"] == "system":
-                self.engine.messages[0]["content"] = self.engine.custom_system_prompt
-                
-            self.log_debug("시스템 프롬프트가 성공적으로 업데이트되었습니다.")
-            
-            # 👇 [추가] 프롬프트 편집 직후 즉시 파일(json)에 영구 저장합니다.
-            self.save_settings() 
-            
+            # 👇 저장 시에도 user_instruction 변수만 갱신
+            self.user_instruction = textbox.get("1.0", "end-1c")
+            self.save_settings()
+            self.log_debug("✨ 개인화 지침이 성공적으로 반영되었습니다.")
             editor.destroy()
             
         ctk.CTkButton(editor, text="저장 및 닫기", command=save_prompt).pack(pady=(0,20))
@@ -411,19 +437,36 @@ class MOPApp(ctk.CTk):
         
         self.user_input.delete("1.0", "end")
         self.send_btn.configure(state="disabled")
-        self.append_chat(f"\n👤 사용자: {query}\n", "user")
+        
+        # 👇 사용자가 엔터를 쳤을 때는 무조건 화면을 맨 아래로 끌어내립니다.
+        self.append_chat(f"\n👤 사용자: {query}\n", "user", force_scroll=True)
         
         threading.Thread(target=self.ai_response_task, args=(query,), daemon=True).start()
         return "break"
 
-    def append_chat(self, text, role="ai"):
-        self.after(0, self._append_chat_internal, text)
+    # 1. 인자 이름을 목적에 맞게 'force_scroll'로 변경합니다.
+    def append_chat(self, text, role="ai", force_scroll=False):
+        self.after(0, self._append_chat_internal, text, force_scroll)
 
-    def _append_chat_internal(self, text):
+    # 2. 스마트 스크롤의 핵심 로직 추가
+    def _append_chat_internal(self, text, force_scroll):
+        # 👇 [수정] yview()가 None을 반환하는 상황을 대비한 안전 장치 (기본값 True)
+        is_at_bottom = True 
+        try:
+            yview_result = self.chat_view.yview()
+            if yview_result is not None and len(yview_result) > 1:
+                current_y_bottom = yview_result[1]
+                is_at_bottom = current_y_bottom >= 0.99
+        except Exception:
+            pass  # 예외가 발생해도 앱이 뻗지 않고 자연스럽게 스크롤을 내립니다.
+
         self.chat_view.configure(state="normal")
         self.chat_view.insert("end", text)
         self.chat_view.configure(state="disabled")
-        self.chat_view.see("end")
+        
+        # 강제 스크롤 요청이거나, 화면 맨 아래를 보고 있었을 때만 스크롤을 따라갑니다.
+        if force_scroll or is_at_bottom:
+            self.chat_view.see("end")
 
     def log_debug(self, msg):
         self.after(0, self._log_debug_internal, msg)
@@ -479,9 +522,12 @@ class MOPApp(ctk.CTk):
                 if "auto_approve" in config: self.auto_approve_var.set(config["auto_approve"])
                 if "show_think" in config: self.show_think_var.set(config["show_think"])
                 if "max_retry" in config: self.max_retry_var.set(config["max_retry"])
-                if "system_prompt" in config: self.engine.custom_system_prompt = config["system_prompt"]
+                if "user_instruction" in config: self.user_instruction = config["user_instruction"]
             except Exception as e:
-                print(f"설정 불러오기 실패: {e}")
+                self.log_debug(f"설정 불러오기 실패: {e}")
+        else:
+            self.log_debug("최초 실행 감지: 시스템 자동 최적화를 진행합니다.")
+            self.auto_optimize_settings(manual_click=False)
 
     def save_settings(self):
         """앱 종료 시 현재 UI 설정값과 프롬프트를 config.json 파일에 저장합니다."""
@@ -499,7 +545,7 @@ class MOPApp(ctk.CTk):
             "auto_approve": self.auto_approve_var.get(),
             "show_think": self.show_think_var.get(),
             "max_retry": self.max_retry_var.get(),
-            "system_prompt": self.engine.custom_system_prompt
+            "user_instruction": self.user_instruction
         }
         try:
             os.makedirs(os.path.dirname(config_path), exist_ok=True)
@@ -507,6 +553,69 @@ class MOPApp(ctk.CTk):
                 json.dump(config, f, indent=4, ensure_ascii=False)
         except Exception as e:
             print(f"설정 저장 실패: {e}")
+    
+    def auto_optimize_settings(self, manual_click=False):
+        """시스템 환경(CPU, GPU)을 분석하여 최적의 슬라이더 값을 추천하고 적용합니다."""
+        import os
+        
+        # 1. CPU 스레드 최적화 (코어 수 - 1개로 세팅하여 OS 다운 방지)
+        cpu_count = os.cpu_count() or 4
+        optimal_threads = max(1, cpu_count - 1)
+        
+        # 기본값 (저사양/CPU 전용 기준)
+        optimal_gpu_layers = 0
+        optimal_n_ctx = 2048
+        optimal_mem_turns = 8
+        optimal_mem_chars = 4000
+        gpu_info = "CPU 전용 모드"
+        
+        # 2. GPU VRAM 감지 및 최적화
+        try:
+            import pynvml
+            pynvml.nvmlInit()
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0) # 첫 번째 GPU
+            info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            vram_gb = float(info.total) / (1024**3)
+            pynvml.nvmlShutdown()
+            
+            gpu_name = pynvml.nvmlDeviceGetName(handle)
+            if isinstance(gpu_name, bytes): gpu_name = gpu_name.decode('utf-8')
+            
+            gpu_info = f"{gpu_name} (VRAM: {vram_gb:.1f}GB)"
+            
+            if vram_gb >= 12:    # 고사양 (12GB 이상)
+                optimal_gpu_layers = 100
+                optimal_n_ctx = 8192
+                optimal_mem_turns = 15
+                optimal_mem_chars = 8000
+            elif vram_gb >= 8:   # 중사양 (8GB)
+                optimal_gpu_layers = 35
+                optimal_n_ctx = 4096
+                optimal_mem_turns = 10
+                optimal_mem_chars = 6000
+            else:                # 저사양 (4~6GB)
+                optimal_gpu_layers = 20
+                optimal_n_ctx = 2048
+                
+        except ImportError:
+            gpu_info = "GPU 감지 불가 (pynvml 미설치)"
+        except Exception as e:
+            gpu_info = f"GPU 인식 실패: CPU 모드 작동"
+            self.log_debug(f"NVIDIA 드라이버 오류: {e}")
+
+        # 3. UI 슬라이더 변수에 추천값 강제 주입
+        self.n_threads_var.set(optimal_threads)
+        self.gpu_layers_var.set(optimal_gpu_layers)
+        self.n_ctx_var.set(optimal_n_ctx)
+        self.mem_turns_var.set(optimal_mem_turns)
+        self.mem_chars_var.set(optimal_mem_chars)
+        
+        # 4. 결과 보고
+        msg = f"✨ 시스템 최적화 완료\n- 감지된 환경: {gpu_info}, CPU {cpu_count}코어\n- 추천 세팅: {optimal_gpu_layers} GPU Layers, {optimal_threads} Threads"
+        
+        self.log_debug(msg)
+        if manual_click: # 사용자가 버튼을 눌렀을 때만 채팅창에 안내
+            self.append_chat(f"\n[⚙️ 하드웨어 스캔 및 최적화 적용]\n{msg}\n", "system", force_scroll=True)
             
 
     # --- [하드웨어 승인 모달 팝업] ---
@@ -598,7 +707,13 @@ class MOPApp(ctk.CTk):
                 if "[학습된 자가 원칙]" not in self.engine.custom_system_prompt:
                     self.engine.custom_system_prompt += "\n\n[학습된 자가 원칙]\n"
                 
-                self.engine.custom_system_prompt += f"- {new_principle} ({datetime.date.today()})\n"
+                new_line = f"- {new_principle} ({datetime.date.today()})\n"
+                self.engine.custom_system_prompt += new_line
+                
+                # 현재 활성 대화의 시스템 메시지도 함께 갱신 (실시간 반영)
+                if self.engine.messages and self.engine.messages[0]["role"] == "system":
+                    self.engine.messages[0]["content"] = self.engine.custom_system_prompt
+
                 self.save_settings() 
                 self.log_debug(f"✨ JSON 데이터화 기반의 새로운 원칙이 학습되었습니다: {new_principle}")
                 
@@ -623,7 +738,14 @@ class MOPApp(ctk.CTk):
             self.log_debug("⚡ '-f' 플래그 감지: 자동 승인 활성화")
 
         self.engine.archive_to_sqlite("user", query)
-        self.engine.messages.append({"role": "user", "content": query})
+        static_rules = self.engine.get_default_system_prompt() # 우리가 공들여 만든 1~14번 원칙
+        combined_prompt = f"{static_rules}\n\n[사용자 지정 페르소나 및 지침]\n{self.user_instruction}"
+        
+        if not self.engine.messages:
+            self.engine.messages.append({"role": "system", "content": combined_prompt})
+        else:
+            # 이미 대화 중이라도 시스템 프롬프트는 최신화된 병합본으로 유지
+            self.engine.messages[0]["content"] = combined_prompt
         
         consecutive_error_count = 0
         
@@ -632,8 +754,8 @@ class MOPApp(ctk.CTk):
             ctx_len = sum(len(str(m.get('content', ''))) for m in self.engine.messages)
             
             # 1. 동적 문맥 압축기 (UI 설정값 연동 및 연속 압축 적용)
-            safe_mem_turns = self.get_safe_int(self.mem_turns_var, 10)
-            safe_mem_chars = self.get_safe_int(self.mem_chars_var, 8000)
+            safe_mem_turns = self.get_safe_int(self.mem_turns_var, 20)
+            safe_mem_chars = self.get_safe_int(self.mem_chars_var, 12000)
             
             # 👇 [핵심 패치] if 대신 while을 사용하여 안전권에 들어올 때까지 과거 기억을 계속 압축
             while True:
@@ -709,21 +831,34 @@ class MOPApp(ctk.CTk):
 
             # 3. JSON 수동 추출
             if not is_tool_call:
-                clean_text = assistant_content.replace("&lt;", "<").replace("&gt;", ">").replace("&#34;", '"')
+                # 👇 [수정] 무식한 replace 대신 완벽한 html unescape 사용
+                clean_text = html.unescape(assistant_content)
                 json_match = re.search(r'```(?:json)?\s*(\[.*?\]|\{.*?\})\s*```', clean_text, re.DOTALL | re.IGNORECASE)
 
                 if json_match:
+                    json_str = json_match.group(1).strip()
+                    
+                    # 👇 [핵심 패치] 열린 괄호와 닫힌 괄호의 개수를 비교하여 모자란 만큼 채워 넣음
+                    open_braces = json_str.count('{')
+                    close_braces = json_str.count('}')
+                    
+                    if open_braces > close_braces:
+                        missing_count = open_braces - close_braces
+                        json_str += '}' * missing_count
+                        self.log_debug(f"🔧 누락된 JSON 닫는 괄호 {missing_count}개를 자동 복구했습니다.")
+
                     try:
-                        parsed = json.loads(json_match.group(1))
+                        parsed = json.loads(json_str)
                         if isinstance(parsed, list): parsed = parsed[0]
                         if isinstance(parsed, dict) and (parsed.get("name") or parsed.get("tool")):
                             is_tool_call = True
                             tc_name = parsed.get("name") or parsed.get("tool")
                             tc_args = json.dumps(parsed.get("arguments") or parsed.get("parameters", parsed))
-                    except Exception:
+                    except Exception as e:
+                        # 👇 [핵심 패치] 파이썬의 실제 에러 메시지(e)를 캡처해서 AI에게 전달할 준비를 합니다.
                         is_tool_call = True
                         tc_name = "json_syntax_error"
-                        tc_args = "{}"
+                        tc_args = json.dumps({"error_detail": str(e)}) 
 
                 self.engine.archive_to_sqlite("assistant", assistant_content.strip())
 
@@ -739,7 +874,9 @@ class MOPApp(ctk.CTk):
                 try:
                     args_dict = json.loads(tc_args)
                     if tc_name == "json_syntax_error":
-                        tool_result = "오류: JSON 문법이 깨졌습니다. 쌍따옴표와 줄바꿈(\\n)에 주의하여 다시 작성하세요."
+                        # 👇 [핵심 패치] AI에게 정확히 왜 깨졌는지 상세 에러를 보여줍니다.
+                        detail = args_dict.get("error_detail", "알 수 없음")
+                        tool_result = f"오류: JSON 문법이 깨졌습니다. (파이썬 에러: {detail})\n쌍따옴표(\")나 이스케이프(\\) 처리에 문제가 없는지 확인하고 올바른 형식으로 다시 제출하세요."
                     
                     # 위험 도구 (마우스/키보드)
                     elif tc_name in ["control_mouse", "control_keyboard"]:
@@ -785,12 +922,14 @@ class MOPApp(ctk.CTk):
                         except Exception as e: tool_result = f"오류: 파일 수정 실패 - {e}"
                     elif tc_name == "append_to_file":
                         f_path = args_dict.get("file_path", "")
-                        content = args_dict.get("content", "")
+                        
+                        # 👇 [핵심 패치] AI가 헷갈려하는 파라미터 이름들을 모두 포용합니다.
+                        content = args_dict.get("content") or args_dict.get("code") or args_dict.get("text") or ""
+                        
                         try:
-                            # 'a' 모드(Append)로 열어서 기존 내용을 지우지 않고 밑에 이어 붙임
                             with open(f_path, 'a', encoding='utf-8') as f:
                                 f.write(content + "\n\n")
-                            tool_result = f"성공: '{f_path}' 파일 끝에 코드 조각이 안전하게 추가되었습니다. 다음 단계의 코드를 이어서 작성하거나, 완성이 끝났다면 'run_shell_command'로 python {f_path} 를 실행하여 결과를 확인하세요."
+                            tool_result = f"성공: '{f_path}' 파일 끝에 코드 조각이 안전하게 추가되었습니다."
                         except Exception as e:
                             tool_result = f"오류: 코드 누적 실패 - {e}"
                     else: tool_result = f"알 수 없는 도구: {tc_name}"
@@ -817,7 +956,7 @@ class MOPApp(ctk.CTk):
                     
                     if consecutive_error_count >= safe_max_retry:
                         self.log_debug("서킷 브레이커 발동! 무한 루프 강제 종료.")
-                        sos_msg = "차니님, 여러 번 시도했지만 에러가 지속됩니다. 방향성을 제시해 주시겠어요?"
+                        sos_msg = "유저님, 여러 번 시도했지만 에러가 지속됩니다. 방향성을 제시해 주시겠어요?"
                         self.append_chat(f"🤖 AI: {sos_msg}\n")
                         self.engine.messages.append({"role": "assistant", "content": sos_msg})
                         break
@@ -834,13 +973,19 @@ class MOPApp(ctk.CTk):
                     )
                 else:
                     consecutive_error_count = 0
-                    current_step_count += 1  # 성공 시 단계 카운트 업
+                    current_step_count += 1
                     self.log_debug(f"✅ {current_step_count}단계 도구 실행 성공.")
                     
-                    # 화면에 작업 성공했다고 알려주기 (기존 로직 유지 + 단계 표시)
                     self.append_chat(f"\n[✅ {current_step_count}단계 작업 완료: {tc_name}]\n", "system")
                     
-                    enforced_result = f"[작업 {current_step_count}단계 결과]\n{tool_result}\n---[시스템 지시]---\n성공했습니다. 남은 작업(다음 단계)이 있다면 즉시 도구를 연속 호출하고, 모두 끝났다면 답변하세요."
+                    # 👇 [핵심 패치] 성공한 작업의 내용을 일지에 기록하여 다음 턴의 '기준'으로 삼게 함
+                    enforced_result = (
+                        f"[작업 {current_step_count}단계 결과 및 완수 확인]\n{tool_result}\n\n"
+                        "---[시스템 작업 일지]---\n"
+                        f"- 현재까지 총 {current_step_count}개의 세부 작업이 성공적으로 완료되었습니다.\n"
+                        f"- 마지막으로 성공한 도구: {tc_name}\n"
+                        "- [지시]: 다음 단계로 넘어가기 전, 방금의 결과가 파일이나 메모리에 실제 반영되었는지 '검증'이 필요하다면 확인 도구를 먼저 쓰세요. 이미 완료된 작업을 절대 반복하지 마세요."
+                    )
 
                 self.engine.messages.append({"role": "tool", "tool_call_id": "call_id", "name": tc_name, "content": enforced_result})
                 continue
