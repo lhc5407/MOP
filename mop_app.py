@@ -11,6 +11,8 @@ import subprocess
 import re
 import sys
 import traceback
+import threading
+import time
 from typing import List, Dict, Any, cast, Iterator
 from ddgs import DDGS
 
@@ -34,6 +36,8 @@ class MOPEngine:
         # 👇 [추가] 백그라운드 작업들을 관리할 저장소와 카운터
         self.background_tasks = {}
         self.task_counter = 0 
+        self.parallel_sub_agents = {}
+        self.sub_agent_counter = 0
         self.custom_system_prompt = self.get_default_system_prompt()
         self.init_db()
 
@@ -181,6 +185,59 @@ class MOPEngine:
         except Exception as e:
             return f"❌ 서브에이전트 추론 중 오류 발생: {e}"
     
+    def _sub_agent_worker(self, task_id, instruction, file_path, input_data):
+        """백그라운드 스레드에서 실제로 기존 서브에이전트 함수를 실행합니다."""
+        try:
+            # 우리가 이전에 만든 기존 서브에이전트 로직을 그대로 재활용합니다!
+            result = self.run_sub_agent(instruction, file_path, input_data)
+            self.parallel_sub_agents[task_id]["result"] = result
+            self.parallel_sub_agents[task_id]["status"] = "completed"
+        except Exception as e:
+            self.parallel_sub_agents[task_id]["result"] = f"❌ 서브에이전트 실행 중 오류: {e}"
+            self.parallel_sub_agents[task_id]["status"] = "error"
+
+    def delegate_parallel_task(self, instruction: str, file_path: str = "", input_data: str = "") -> str:
+        """서브에이전트에게 분석을 위임하고 즉시 task_id만 반환합니다 (비동기 병렬 처리)."""
+        if not self.llm: return "오류: LLM이 로드되지 않았습니다."
+        
+        self.sub_agent_counter += 1
+        task_id = f"sub_agent_{self.sub_agent_counter}"
+        
+        # 작업 상태 등록
+        self.parallel_sub_agents[task_id] = {
+            "status": "running",
+            "result": None,
+            "instruction": instruction
+        }
+        
+        # 스레드로 백그라운드 실행 (메인 뇌는 멈추지 않음)
+        thread = threading.Thread(target=self._sub_agent_worker, args=(task_id, instruction, file_path, input_data), daemon=True)
+        thread.start()
+        
+        return f"✅ 성공: 서브에이전트 병렬 작업 '{task_id}'가 백그라운드에서 시작되었습니다. (지시: {instruction[:30]}...)\n기다리지 말고 즉시 다른 병렬 작업을 추가로 지시하거나, 모든 지시가 끝났다면 'join_sub_agent_results' 도구를 사용하여 결과가 나올 때까지 대기하세요."
+
+    def join_sub_agent_results(self, task_ids: list) -> str:
+        """여러 개의 병렬 서브에이전트 작업이 모두 완료될 때까지 기다렸다가 결과를 통합하여 반환합니다."""
+        if not task_ids:
+            return "❌ 오류: 확인할 task_id 목록이 비어있습니다."
+            
+        results_summary = []
+        for tid in task_ids:
+            if tid not in self.parallel_sub_agents:
+                results_summary.append(f"[{tid}] ❌ 오류: 존재하지 않거나 이미 완료/삭제된 작업 ID입니다.")
+                continue
+                
+            # 해당 작업이 완료될 때까지 메인 뇌를 대기(Polling)시킵니다.
+            while self.parallel_sub_agents[tid]["status"] == "running":
+                time.sleep(1) # 1초마다 상태 확인
+                
+            # 완료되면 결과 추출 및 메모리 정리
+            res = self.parallel_sub_agents[tid]["result"]
+            results_summary.append(f"========== [병렬 작업: {tid} 결과] ==========\n{res}")
+            del self.parallel_sub_agents[tid]
+            
+        return "\n\n".join(results_summary)
+    
     def load_model(self, model_path, n_gpu_layers, n_ctx, n_threads, kv_quant_mode):
         if self.llm:
             del self.llm
@@ -237,7 +294,9 @@ class MOPEngine:
             "13. [시간 인지 강제화]: 시스템이 맨 윗줄에 제공한 '현재 시간'이 이 세계의 절대적인 기준입니다. 당신의 훈련 데이터 시점(과거)을 기준으로 현재 시간을 '미래'라고 판단하거나 변명하지 마세요. 현재 시간을 기준으로 모든 상황을 해석하세요.\n"
             "14. [글로벌 검색 프로토콜]: search_web 도구를 사용할 때는 사용자의 지시가 한국어라도 반드시 검색어를 영어로 번역해서 도구를 호출하세요. 검색된 영어 원문 데이터를 읽고 나면, 사용자에게 보고하거나 파일에 기록할 때는 완벽하고 자연스러운 한국어로 번역 및 요약해야 합니다.\n"
             "15. [OS 환경]: 당신은 현재 Windows 환경에서 실행 중입니다. 터미널 명령어는 반드시 윈도우 CMD 기준으로 작성하세요. (예: pwd 대신 cd, ls 대신 dir, mkdir -p 대신 mkdir 사용)\n"
-            "16. [로컬 프로젝트 지침 절대 준수]: 만약 프롬프트 하단에 '[현재 프로젝트 맞춤 지침]'이라는 섹션이 존재한다면, 이는 당신이 현재 위치한 코드베이스의 최상위 법률입니다. 기존의 일반적인 개발 상식보다 이 지침의 내용을 최우선으로 적용하여 답변하고 코드를 작성하세요."
+            "16. [로컬 프로젝트 지침 절대 준수]: 만약 프롬프트 하단에 '[현재 프로젝트 맞춤 지침]'이라는 섹션이 존재한다면, 이는 당신이 현재 위치한 코드베이스의 최상위 법률입니다. 기존의 일반적인 개발 상식보다 이 지침의 내용을 최우선으로 적용하여 답변하고 코드를 작성하세요.\n"
+            "17. [사고 언어 고정]: 속마음(<tool_call> 태그 내부)을 포함하여, 도구 호출 전 작성하는 모든 내부 추론 및 작업 계획 과정은 반드시 '한국어'혹은 '영어'로만 작성하세요. 중국어 등 다른 언어의 혼용을 엄격히 금지합니다.\n"
+            "18. [병렬 작업 최적화]: 복잡하고 양이 많은 과업(예: 3개 이상의 독립적인 작업. 단, 서로 의존성이 없는 작업)을 받으면, 이를 독립적인 부분 과업으로 나누어 'delegate_parallel_task'를 통해 동시에 실행하세요. 모든 병렬 작업이 시작된 후에는 반드시 'join_sub_agent_results'를 호출하여 흩어진 정보들을 하나로 통합하고 최종 결론을 도출하세요."
         )
 
     def get_tools(self):
@@ -332,7 +391,41 @@ class MOPEngine:
                         "required": ["instruction"]
                     }
                 }
-            }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "delegate_parallel_task",
+                    "description": "여러 분석이나 검색을 동시에 처리해야 할 때, 서브에이전트를 백그라운드로 실행하고 즉시 다음 도구를 쓸 수 있게 합니다. 완료 시 task_id를 반환합니다.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "instruction": {"type": "string", "description": "서브에이전트에게 내릴 지시 사항"},
+                            "file_path": {"type": "string", "description": "분석할 파일 경로 (선택)"},
+                            "input_data": {"type": "string", "description": "직접 분석할 텍스트 (선택)"}
+                        },
+                        "required": ["instruction"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "join_sub_agent_results",
+                    "description": "delegate_parallel_task로 실행한 병렬 작업들이 모두 끝날 때까지 대기하고, 완료된 모든 결과 보고서를 하나의 텍스트로 합쳐서 반환합니다.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "task_ids": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "결과를 합칠 작업 ID들의 목록 (예: ['sub_agent_1', 'sub_agent_2'])"
+                            }
+                        },
+                        "required": ["task_ids"]
+                    }
+                }
+            },
         ]
 
 
@@ -378,6 +471,9 @@ class MOPApp(ctk.CTk):
 
         self.approval_event = threading.Event()
         self.approval_result = False
+
+        self.is_waiting_for_approval = False 
+        self.current_approval_dialog = None
 
         # 👇 [순서 변경] 반드시 UI(사이드바, 메인)를 먼저 그리고 나서 세팅을 불러와야 합니다!
         self.create_sidebar()
@@ -623,12 +719,52 @@ class MOPApp(ctk.CTk):
         query = self.user_input.get("1.0", "end-1c").strip()
         if not query or not self.engine.llm: return "break"
         
+        # 👇 [신규 패치] 결재 대기 중이라면 입력을 일반 대화가 아닌 '결재 서류'로 가로챕니다!
+        if getattr(self, 'is_waiting_for_approval', False):
+            positive_words = ["승인", "허락", "진행", "ㅇㅇ", "응", "yes", "y", "ok", "오케이", "해", "콜", "동의", "진행시켜"]
+            negative_words = ["거절", "차단", "안돼", "멈춰", "no", "n", "취소", "하지마", "싫어"]
+            
+            lower_text = query.lower()
+            if any(w in lower_text for w in positive_words):
+                self.approval_result = True
+            elif any(w in lower_text for w in negative_words):
+                self.approval_result = False
+            else:
+                # 긍정도 부정도 아니면 다시 묻기
+                self.append_chat(f"\n👤 사용자: {query}\n", "user")
+                self.append_chat("🛡️ [시스템] ⚠️ 현재 보안 승인 대기 중입니다. '승인' 또는 '거절'을 명확히 입력해 주세요.\n", "system")
+                self.user_input.delete("1.0", "end")
+                return "break"
+                
+            # 팝업창 폭파 및 결재 상태 해제
+            self.is_waiting_for_approval = False
+            
+            # 👇 [수정] 변수에 먼저 담고, 명시적으로 None이 아닐 때만 destroy를 호출합니다.
+            dialog = getattr(self, 'current_approval_dialog', None)
+            if dialog is not None:
+                try:
+                    dialog.destroy()
+                except Exception:
+                    pass
+            
+            self.current_approval_dialog = None
+            
+            # 채팅창에 결재 기록 남기기
+            self.append_chat(f"\n👤 사용자: {query}\n", "user")
+            self.append_chat(f"🛡️ [시스템] 채팅 명령을 인식하여 {'✅ 승인' if self.approval_result else '❌ 거절'} 처리했습니다.\n", "system", force_scroll=True)
+            
+            self.user_input.delete("1.0", "end")
+            self.approval_event.set() # 멈춰있던 MOP의 뇌를 다시 깨움!
+            
+            return "break" # LLM 추론 스레드를 새로 띄우지 않고 여기서 즉시 함수 종료
+
+        # --- 👇 (아래는 결재 대기 중이 아닐 때 실행되는 기존 정상 로직) ---
         self.user_input.delete("1.0", "end")
         
-        # 👇 [수정] 전송 버튼을 비활성화하는 대신, 빨간색 '정지' 버튼으로 변신시킵니다!
+        # 전송 버튼을 비활성화하는 대신, 빨간색 '정지' 버튼으로 변신시킵니다!
         self.set_ui_generating_state()
         
-        # 👇 사용자가 엔터를 쳤을 때는 무조건 화면을 맨 아래로 끌어내립니다.
+        # 사용자가 엔터를 쳤을 때는 무조건 화면을 맨 아래로 끌어내립니다.
         self.append_chat(f"\n👤 사용자: {query}\n", "user", force_scroll=True)
         
         threading.Thread(target=self.ai_response_task, args=(query,), daemon=True).start()
@@ -882,19 +1018,25 @@ class MOPApp(ctk.CTk):
 
     # --- [하드웨어 승인 모달 팝업] ---
     def ask_security_approval(self, title, message):
-        """다목적 보안 승인(품질 게이트) 팝업을 띄우고 결과를 반환합니다."""
+        """다목적 보안 승인 팝업 띄우기 (채팅 승인과 연동)"""
         self.approval_event.clear()
+        self.is_waiting_for_approval = True  # 결재 대기 모드 ON
         self.after(0, self._show_security_dialog, title, message)
         self.approval_event.wait()
         return self.approval_result
 
     def _show_security_dialog(self, title, message):
         dialog = ctk.CTkToplevel(self)
+        self.current_approval_dialog = dialog  # 창 객체 저장
         dialog.title(title)
         dialog.geometry("450x250")
         dialog.attributes("-topmost", True)
         
-        # 메시지가 길면 자동으로 줄바꿈 처리
+        # 사용자가 창의 X 버튼을 눌러서 강제로 껐을 때 '거절'로 처리
+        def on_window_close():
+            on_click(False)
+        dialog.protocol("WM_DELETE_WINDOW", on_window_close)
+        
         ctk.CTkLabel(dialog, text=message, wraplength=400, justify="left", font=ctk.CTkFont(size=13)).pack(pady=20, padx=20)
         
         btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
@@ -902,6 +1044,8 @@ class MOPApp(ctk.CTk):
         
         def on_click(res):
             self.approval_result = res
+            self.is_waiting_for_approval = False
+            self.current_approval_dialog = None
             self.approval_event.set()
             dialog.destroy()
 
@@ -1281,13 +1425,15 @@ class MOPApp(ctk.CTk):
                     elif tc_name == "check_task_status": 
                         tool_result = self.engine.check_task_status(args_dict.get("task_id", ""))
                         
-                    # 👇 [추가] 서브에이전트 라우팅
                     elif tc_name == "delegate_to_sub_agent":
-                        tool_result = self.engine.run_sub_agent(
-                            instruction=args_dict.get("instruction", ""),
-                            file_path=args_dict.get("file_path", ""),
-                            input_data=args_dict.get("input_data", "")
-                        )
+                        tool_result = self.engine.run_sub_agent(args_dict.get("instruction", ""), args_dict.get("file_path", ""), args_dict.get("input_data", ""))
+                    
+                    # 👇 [신규 추가] 병렬 에이전트 라우팅
+                    elif tc_name == "delegate_parallel_task":
+                        tool_result = self.engine.delegate_parallel_task(args_dict.get("instruction", ""), args_dict.get("file_path", ""), args_dict.get("input_data", ""))
+                        
+                    elif tc_name == "join_sub_agent_results":
+                        tool_result = self.engine.join_sub_agent_results(args_dict.get("task_ids", []))
                     elif tc_name == "append_to_file":
                         f_path = args_dict.get("file_path", "")
                         
