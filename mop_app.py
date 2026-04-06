@@ -113,9 +113,7 @@ class MOPEngine:
             type_v=kv_type,
             flash_attn=True, 
             
-            # 👇 [추가된 KV 최적화 파라미터]
-            # 장시간 자율 주행 시 VRAM 폭발을 막기 위해 KV 캐시를 시스템 RAM으로 강제 할당합니다.
-            offload_kqv=False, 
+            offload_kqv=True, 
             
             verbose=False, 
             chat_format="chatml-function-calling"
@@ -135,9 +133,13 @@ class MOPEngine:
             "1. 한국어로 답변하고, 도구 호출은 ```json 블록을 사용하세요.\n"
             "2. 모든 작업은 순차적으로 진행하며, 한 번에 하나의 도구만 호출하세요.\n"
             "3. [다중 작업 검증]: 작업이 끝났다고 대화를 멈추지 마세요. 완료되지 않은 지시가 있다면 즉시 다음 도구를 연속 호출하세요.\n"
-            "4. [자가 디버깅 루틴]: 에러가 발생하면 절대 포기하거나 사용자에게 변명하지 말고, 코드를 수정하여 즉시 재호출하세요.\n"
+            "4. [자가 디버깅 루틴]: 에러가 발생하면 절대 포기하거나 사용자에게 변명하지 말고, 디버그 내용을 기반으로 코드를 수정하여 즉시 재호출하세요.\n"
             "5. [코딩 작업 지시서(Plan)]: 복잡한 코딩 요청을 받으면, 메모장이나 텍스트 파일에 '작업 계획서'를 먼저 작성하세요.\n"
-            "6. [환경 파악]: 코드를 짜기 전에 'run_shell_command'로 환경을 먼저 확인하는 습관을 들이세요."
+            "6. [환경 파악]: 코드를 짜기 전에 'run_shell_command'로 환경을 먼저 확인하는 습관을 들이세요.\n"
+            "7. [누적형 코딩 프로토콜]: 길이가 긴 파이썬 코드를 작성해야 할 경우, run_python_snippet으로 한 번에 출력하려다 토큰 제한에 걸려 잘리지 마세요. 대신 append_to_file 도구를 사용하여 workspace.py 같은 파일에 '1단계: 모듈 임포트', '2단계: 데이터 수집', '3단계: 로직 계산' 식으로 여러 번에 걸쳐 코드를 누적해 나가세요. 작성이 모두 끝나면 run_shell_command로 python workspace.py를 실행하여 통합 결과를 도출하세요.\n"
+            "8. [단계별 체크포인트 전략]: 에러가 발생하면 전체 파일을 다시 처음부터 쓰지 마세요. 시스템이 알려주는 '실패 단계'를 확인하고, 해당 부분의 로직만 수정하여 다시 이어 붙이거나(Append) 패치(Edit) 하세요. 당신은 이전에 성공한 단계의 데이터를 신뢰할 수 있습니다.\n"
+            "9. [토큰 낭비 방지]: 절대 <think> 태그를 사용하여 속마음을 출력하지 마세요. 불필요한 독백을 생략하고 즉시 도구 호출 JSON만 출력하세요.\n"
+            "10. [대기 멘트 금지]: 도구 호출 전후에 '잠시 기다려주세요' 등의 변명을 절대 하지 마세요. 결과를 읽는 즉시 다음 도구를 연속 호출하거나 답변하세요."
         )
 
     def get_tools(self):
@@ -169,6 +171,21 @@ class MOPEngine:
                             "replace_string": {"type": "string"}
                         },
                         "required": ["file_path", "search_string", "replace_string"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "append_to_file",
+                    "description": "파일의 맨 끝에 코드를 누적해서 덧붙입니다. 긴 파이썬 코드를 한 번에 짜면 토큰 제한에 걸리므로, 이 도구를 여러 번 반복 호출하여 코드를 단계별로 완성해 나갈 때 매우 유용합니다.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "file_path": {"type": "string", "description": "코드를 누적할 파이썬 파일 경로 (예: temp_workspace.py)"},
+                            "content": {"type": "string", "description": "이번 턴에 덧붙일 코드 조각"}
+                        },
+                        "required": ["file_path", "content"]
                     }
                 }
             }
@@ -208,12 +225,23 @@ class MOPApp(ctk.CTk):
         self.show_think_var = ctk.BooleanVar(value=True)
         self.max_retry_var = ctk.IntVar(value=3)
 
-        # 하드웨어 제어 동기화 이벤트
+        # 👇 [추가] 모델의 절대 경로를 기억할 전용 변수
+        self.full_model_path = "" 
+
         self.approval_event = threading.Event()
         self.approval_result = False
 
+        # 👇 [순서 변경] 반드시 UI(사이드바, 메인)를 먼저 그리고 나서 세팅을 불러와야 합니다!
         self.create_sidebar()
         self.create_main_area()
+        
+        self.load_settings()
+        
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def on_closing(self):
+        self.save_settings()
+        self.destroy()
 
     # --- [UI 헬퍼 함수: 값 라벨이 달린 슬라이더 생성] ---
     def add_slider_control(self, parent, label_text, variable, from_, to, steps, fmt="{:.0f}"):
@@ -323,10 +351,14 @@ class MOPApp(ctk.CTk):
         
         def save_prompt():
             self.engine.custom_system_prompt = textbox.get("1.0", "end-1c")
-            # 현재 대화의 첫 번째 메시지(system) 갱신
             if self.engine.messages and self.engine.messages[0]["role"] == "system":
                 self.engine.messages[0]["content"] = self.engine.custom_system_prompt
+                
             self.log_debug("시스템 프롬프트가 성공적으로 업데이트되었습니다.")
+            
+            # 👇 [추가] 프롬프트 편집 직후 즉시 파일(json)에 영구 저장합니다.
+            self.save_settings() 
+            
             editor.destroy()
             
         ctk.CTkButton(editor, text="저장 및 닫기", command=save_prompt).pack(pady=(0,20))
@@ -334,6 +366,7 @@ class MOPApp(ctk.CTk):
     def browse_model(self):
         path = filedialog.askopenfilename(filetypes=[("GGUF Models", "*.gguf")])
         if path:
+            self.full_model_path = path  # 👈 [추가] 전체 경로를 변수에 저장
             self.model_path_var.set(os.path.basename(path))
             threading.Thread(target=self.load_engine_task, args=(path,), daemon=True).start()
 
@@ -415,6 +448,67 @@ class MOPApp(ctk.CTk):
         except Exception:
             return default_val
 
+    def load_settings(self):
+        """앱 시작 시 config.json 파일에서 설정값을 불러옵니다."""
+        config_path = "./skills/mop_config.json"
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+                
+                # 👇 [수정] 절대 경로를 읽어와서 자동 로딩 실행
+                if "model_path" in config and config["model_path"]:
+                    self.full_model_path = config["model_path"]
+                    if os.path.exists(self.full_model_path):
+                        # UI에는 짧은 이름만 표시
+                        self.model_path_var.set(os.path.basename(self.full_model_path))
+                        # 백그라운드에서 엔진 자동 로딩 시작!
+                        threading.Thread(target=self.load_engine_task, args=(self.full_model_path,), daemon=True).start()
+                    else:
+                        self.log_debug("⚠️ 저장된 모델 경로를 찾을 수 없어 로딩을 건너뜁니다.")
+
+                # (이하 나머지 UI 변수 불러오기 유지)
+                if "kv_quant" in config: self.kv_quant_var.set(config["kv_quant"])
+                if "n_ctx" in config: self.n_ctx_var.set(config["n_ctx"])
+                if "gpu_layers" in config: self.gpu_layers_var.set(config["gpu_layers"])
+                if "n_threads" in config: self.n_threads_var.set(config["n_threads"])
+                if "temp" in config: self.temp_var.set(config["temp"])
+                if "max_tokens" in config: self.max_tokens_var.set(config["max_tokens"])
+                if "mem_turns" in config: self.mem_turns_var.set(config["mem_turns"])
+                if "mem_chars" in config: self.mem_chars_var.set(config["mem_chars"])
+                if "auto_approve" in config: self.auto_approve_var.set(config["auto_approve"])
+                if "show_think" in config: self.show_think_var.set(config["show_think"])
+                if "max_retry" in config: self.max_retry_var.set(config["max_retry"])
+                if "system_prompt" in config: self.engine.custom_system_prompt = config["system_prompt"]
+            except Exception as e:
+                print(f"설정 불러오기 실패: {e}")
+
+    def save_settings(self):
+        """앱 종료 시 현재 UI 설정값과 프롬프트를 config.json 파일에 저장합니다."""
+        config_path = "./skills/mop_config.json"
+        config = {
+            "model_path": self.full_model_path,  # 👈 [수정] model_path_var.get() 대신 절대 경로 저장
+            "kv_quant": self.kv_quant_var.get(),
+            "n_ctx": self.n_ctx_var.get(),
+            "gpu_layers": self.gpu_layers_var.get(),
+            "n_threads": self.n_threads_var.get(),
+            "temp": self.temp_var.get(),
+            "max_tokens": self.max_tokens_var.get(),
+            "mem_turns": self.mem_turns_var.get(),
+            "mem_chars": self.mem_chars_var.get(),
+            "auto_approve": self.auto_approve_var.get(),
+            "show_think": self.show_think_var.get(),
+            "max_retry": self.max_retry_var.get(),
+            "system_prompt": self.engine.custom_system_prompt
+        }
+        try:
+            os.makedirs(os.path.dirname(config_path), exist_ok=True)
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            print(f"설정 저장 실패: {e}")
+            
+
     # --- [하드웨어 승인 모달 팝업] ---
     def ask_hardware_approval(self, tool_name):
         self.approval_event.clear()
@@ -441,12 +535,67 @@ class MOPApp(ctk.CTk):
         ctk.CTkButton(btn_frame, text="거절 (N)", command=lambda: on_click(False), fg_color="red", hover_color="darkred", width=80).pack(side="right", padx=10)
 
     # --- [3. AI 핵심 추론 및 도구 실행 루프] ---
+    def finalize_task_retrospective(self):
+        """작업 성공 후, 새로운 스킬이나 원칙을 도출하여 시스템 프롬프트에 패치합니다."""
+        
+        # [Pylance 대응 1] llm 인스턴스가 None인지 확인 (Optional Member Access 방어)
+        if self.engine.llm is None:
+            return
+            
+        self.log_debug("🧐 작업 완료 후 사후 회고 및 시스템 개선 중...")
+        
+        # [Pylance 대응 2] 리스트 복사 및 타입 힌트 명확화
+        retrospective_msg: List[Dict[str, Any]] = list(self.engine.messages)
+        retrospective_msg.append({
+            "role": "user", 
+            "content": "방금 수행한 작업을 복기해봐. 다음에 비슷한 요청을 받았을 때 더 효율적으로 일하기 위해 '시스템 프롬프트'에 추가할 새로운 '작업 원칙'이나 '꿀팁'이 있다면 딱 한 문장으로 제안해줘. (없다면 '없음'이라고 답해)"
+        })
+        
+        try:
+            # [Pylance 대응 3] 반환 타입을 Dict로 캐스팅하고 stream=False 명시
+            resp = cast(Dict[str, Any], self.engine.llm.create_chat_completion(
+                messages=cast(Any, retrospective_msg),
+                max_tokens=150,
+                temperature=0.3,
+                stream=False
+            ))
+            
+            # [Pylance 대응 4] 딕셔너리 안전 접근 (.get) 및 None 타입 방어
+            choices = resp.get("choices", [])
+            if not choices:
+                return
+                
+            message = choices[0].get("message", {})
+            content = message.get("content")
+            
+            if not content: # content가 None이거나 빈 문자열인 경우 방어
+                return
+                
+            new_principle = str(content).strip()
+            
+            if new_principle and "없음" not in new_principle:
+                # 시스템 프롬프트 하단에 '학습된 원칙' 섹션 추가/갱신
+                if "[학습된 자가 원칙]" not in self.engine.custom_system_prompt:
+                    self.engine.custom_system_prompt += "\n\n[학습된 자가 원칙]\n"
+                
+                self.engine.custom_system_prompt += f"- {new_principle} ({datetime.date.today()})\n"
+                self.save_settings() # 변경된 프롬프트를 config.json에 즉시 저장
+                self.log_debug(f"✨ 새로운 원칙이 학습되었습니다: {new_principle}")
+                
+        except Exception as e:
+            self.log_debug(f"사후 회고 중 오류 발생: {e}")
+    
     def ai_response_task(self, query):
         if self.engine.llm is None:
             self.log_debug("🚨 오류: 모델이 아직 로드되지 않았습니다.")
             self.after(0, lambda: self.send_btn.configure(state="normal"))
             return
 
+        # 👇 [추가] 작업 단계 추적 변수
+        current_step_count = 0
+        task_completed_successfully = False
+        
+        # (기존 -f 플래그 확인 로직...)
         auto_approve_this_turn = self.auto_approve_var.get()
         if query.endswith("-f") or query.endswith("-F"):
             auto_approve_this_turn = True
@@ -480,15 +629,17 @@ class MOPApp(ctk.CTk):
             self.append_chat("\n🤖 AI: ", "ai")
             
             # 2. LLM 스트리밍 (UI Temperature 및 Max Tokens 연동)
-            # 👇 [수정] temp_var와 max_tokens_var 안전 호출
             safe_temp = self.get_safe_float(self.temp_var, 0.1)
             safe_max_tokens = self.get_safe_int(self.max_tokens_var, 2048)
             
             stream = cast(Iterator[Dict[str, Any]], self.engine.llm.create_chat_completion(
-                messages=cast(Any, self.engine.messages), tools=cast(Any, self.engine.get_tools()), 
-                stream=True, temperature=safe_temp, max_tokens=safe_max_tokens
+                messages=cast(Any, self.engine.messages), 
+                tools=cast(Any, self.engine.get_tools()), 
+                stream=True, 
+                temperature=safe_temp, 
+                max_tokens=safe_max_tokens,
+                repeat_penalty=1.0  # 👈 [핵심 복구] 똑같은 말을 반복하지 못하도록 강제하는 패널티
             ))
-
             assistant_content = ""
             tc_name = ""
             tc_args = ""
@@ -599,12 +750,22 @@ class MOPApp(ctk.CTk):
                                 with open(f_path, 'w', encoding='utf-8') as f: f.write(content.replace(s_str, r_str))
                                 tool_result = f"성공: '{f_path}' 교체 완료."
                         except Exception as e: tool_result = f"오류: 파일 수정 실패 - {e}"
+                    elif tc_name == "append_to_file":
+                        f_path = args_dict.get("file_path", "")
+                        content = args_dict.get("content", "")
+                        try:
+                            # 'a' 모드(Append)로 열어서 기존 내용을 지우지 않고 밑에 이어 붙임
+                            with open(f_path, 'a', encoding='utf-8') as f:
+                                f.write(content + "\n\n")
+                            tool_result = f"성공: '{f_path}' 파일 끝에 코드 조각이 안전하게 추가되었습니다. 다음 단계의 코드를 이어서 작성하거나, 완성이 끝났다면 'run_shell_command'로 python {f_path} 를 실행하여 결과를 확인하세요."
+                        except Exception as e:
+                            tool_result = f"오류: 코드 누적 실패 - {e}"
                     else: tool_result = f"알 수 없는 도구: {tc_name}"
+                    
 
                 except Exception as e:
                     tool_result = f"파싱/실행 에러: {e}"
 
-                # 5. 서킷 브레이커 및 강력한 디버깅 프로토콜
                 if len(tool_result) > 6000:
                     self.log_debug("결과가 너무 길어 메모리 최적화 수행")
                     tool_result = tool_result[:3000] + "\n...[데이터가 너무 길어 중략됨]...\n" + tool_result[-3000:]
@@ -615,7 +776,12 @@ class MOPApp(ctk.CTk):
                     consecutive_error_count += 1
                     safe_max_retry = self.get_safe_int(self.max_retry_var, 3)
                     
-                    self.log_debug(f"🚨 에러 발생 ({consecutive_error_count}/{safe_max_retry})")
+                    # 로그에 단계 정보 추가
+                    self.log_debug(f"🚨 {current_step_count + 1}단계 실행 중 에러 발생 ({consecutive_error_count}/{safe_max_retry})")
+                    
+                    # 화면에 에러 났다고 사용자에게도 알려주기 (기존 로직 유지 + 단계 표시)
+                    self.append_chat(f"\n[⚠️ {current_step_count + 1}단계 시스템 에러 감지 및 부분 재시도 중...]\n", "system")
+                    
                     if consecutive_error_count >= safe_max_retry:
                         self.log_debug("서킷 브레이커 발동! 무한 루프 강제 종료.")
                         sos_msg = "차니님, 여러 번 시도했지만 에러가 지속됩니다. 방향성을 제시해 주시겠어요?"
@@ -623,24 +789,35 @@ class MOPApp(ctk.CTk):
                         self.engine.messages.append({"role": "assistant", "content": sos_msg})
                         break
                     
+                    # 기존 디버그 프로토콜 + 단계별 부분 복구 지시 융합
                     enforced_result = (
-                        # 👇 [수정 3] self.max_retry_var.get() 대신 안전한 safe_max_retry 변수 사용!
-                        f"🚨 [도구 실행 실패 - 에러 발생! (현재 {consecutive_error_count}회/최대 {safe_max_retry}회)]\n{tool_result}\n\n"
-                        "---[시스템 디버그 긴급 지시 (Coding Agent Protocol)]---\n"
+                        f"🚨 [작업 {current_step_count + 1}단계 도구 실행 실패 - 에러 발생! (현재 {consecutive_error_count}회/최대 {safe_max_retry}회)]\n{tool_result}\n\n"
+                        "---[증분 복구 및 시스템 디버그 긴급 지시]---\n"
                         "1. (반복 금지): 직전과 똑같은 코드를 제출하지 마세요.\n"
-                        "2. (우회로 탐색): 'run_shell_command'로 환경을 확인하거나 다른 라이브러리를 쓰세요.\n"
-                        "3. (검색 강제): 원인을 모르면 즉시 'search_web'으로 구글링하세요.\n"
-                        "4. 해결책을 찾아 다시 호출하세요. 변명하지 마세요."
+                        "2. (부분 수정): 전체 작업을 처음부터 다시 빌드하지 말고, 실패한 현재 단계의 코드만 분석하여 다시 이어 붙이세요(append).\n"
+                        "3. (상태 점검): 필요시 'run_shell_command'나 'view_file'로 현재 누적된 파일 상태를 먼저 확인하세요.\n"
+                        "4. (검색 강제): 원인을 모르면 즉시 'search_web'으로 구글링하세요.\n"
+                        "5. 수정된 코드 조각만 다시 제출하여 작업을 이어가세요. 변명하지 마세요."
                     )
                 else:
                     consecutive_error_count = 0
-                    self.log_debug("도구 실행 성공.")
-                    enforced_result = f"[도구 실행 결과]\n{tool_result}\n---[시스템 지시]---\n성공했습니다. 남은 작업이 있다면 즉시 연속 호출하고, 끝났다면 답변하세요."
+                    current_step_count += 1  # 성공 시 단계 카운트 업
+                    self.log_debug(f"✅ {current_step_count}단계 도구 실행 성공.")
+                    
+                    # 화면에 작업 성공했다고 알려주기 (기존 로직 유지 + 단계 표시)
+                    self.append_chat(f"\n[✅ {current_step_count}단계 작업 완료: {tc_name}]\n", "system")
+                    
+                    enforced_result = f"[작업 {current_step_count}단계 결과]\n{tool_result}\n---[시스템 지시]---\n성공했습니다. 남은 작업(다음 단계)이 있다면 즉시 도구를 연속 호출하고, 모두 끝났다면 답변하세요."
 
                 self.engine.messages.append({"role": "tool", "tool_call_id": "call_id", "name": tc_name, "content": enforced_result})
-                continue 
+                continue
             
+            task_completed_successfully = True # 루프를 정상적으로 빠져나오면 성공으로 간주
             break
+
+        # 👇 [추가] 루프 종료 후 성공했다면 사후 회고 실행
+        if task_completed_successfully and consecutive_error_count == 0:
+            threading.Thread(target=self.finalize_task_retrospective, daemon=True).start()
 
         gc.collect()
         self.after(0, lambda: self.send_btn.configure(state="normal"))
