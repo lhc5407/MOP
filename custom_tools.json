@@ -1,0 +1,14 @@
+[
+    {
+        "type": "function",
+        "function": {
+            "name": "auto_debug_and_fix",
+            "description": "파이썬 런타임 에러를 자동으로 분석하고, 원인 파일을 찾아 수정 코드를 제안하거나 자동으로 적용하는 도구입니다.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    }
+]
