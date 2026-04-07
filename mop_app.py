@@ -298,10 +298,24 @@ class MOPEngine:
         return True
 
     def get_default_system_prompt(self):
+        import datetime, os, json
         current_time = datetime.datetime.now().strftime("%Y년 %m월 %d일 %H시 %M분")
         tools_str = "\n".join(f"- {t['function']['name']}: {t['function']['description']}" for t in self.get_tools())
+        
+        # 👇 [신규 추가] 저장된 자가 원칙을 읽어옵니다.
+        principles_str = ""
+        principles_path = "self_principles.json"
+        if os.path.exists(principles_path):
+            try:
+                with open(principles_path, "r", encoding="utf-8") as f:
+                    principles = json.load(f)
+                    if principles and isinstance(principles, list):
+                        principles_str = "\n\n[🧬 MOP 자가 원칙 (최우선 행동 강령)]\n" + "\n".join(f"{i+1}. {p}" for i, p in enumerate(principles))
+            except Exception:
+                pass
         return (
             f"당신은 로컬 시스템 제어 및 장기 기억을 보유한 AI 에이전트입니다. 현재 시간: {current_time}\n\n"
+            f"{principles_str}\n\n"
             "[사용 가능한 도구 목록]\n" + tools_str + "\n\n"
             "[도구 호출 프로토콜]\n"
             "도구를 호출할 때는 반드시 아래의 JSON 스키마를 엄격히 준수하여 ```json 블록으로 출력하세요.\n"
@@ -329,7 +343,7 @@ class MOPEngine:
         # (이전 지시대로 14개 도구가 모두 포함되어 있습니다)
         tools = [
             {"type": "function", "function": {"name": "search_web", "description": "인터넷 웹 검색을 수행합니다. 방대한 결과 확보를 위해 검색어(query)는 반드시 '영어'로 번역하여 입력하세요. (예: '비트코인 시황' -> 'Bitcoin market latest trends')", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "영어로 번역된 구체적인 검색어"}}, "required": ["query"]}}},
-            {"type": "function", "function": {"name": "run_python_snippet", "description": "파이썬 실행(code)", "parameters": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}}},
+            {"type": "function", "function": {"name": "run_python_snippet", "description": "파이썬 실행(code):파이썬 코드를 보낼 때는 따옴표 충돌을 피하기 위해 되도록 `f-string`이나 복잡한 3중 따옴표 중첩을 피하고 단순한 문자열 구조를 사용해야합니다", "parameters": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}}},
             {"type": "function", "function": {"name": "manage_packages", "description": "패키지 관리(action, package_name)", "parameters": {"type": "object", "properties": {"action": {"type": "string"}, "package_name": {"type": "string"}}, "required": ["action"]}}},
             {"type": "function", "function": {"name": "control_mouse", "description": "마우스 제어(action: move/click, x, y)", "parameters": {"type": "object", "properties": {"action": {"type": "string"}, "x": {"type": "integer"}, "y": {"type": "integer"}}, "required": ["action"]}}},
             {"type": "function", "function": {"name": "control_keyboard", "description": "키보드 타이핑/단축키(action: type/press/hotkey, text, key)", "parameters": {"type": "object", "properties": {"action": {"type": "string"}, "text": {"type": "string"}, "key": {"type": "string"}}, "required": ["action"]}}},
@@ -502,6 +516,24 @@ class MOPEngine:
                             "query": {"type": "string", "description": "검색할 질문이나 문장 (예: '리액트 무한 루프 에러 어떻게 고쳐?')"}
                         },
                         "required": ["query"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "update_self_principles",
+                    "description": "시스템의 근본적인 행동 원칙(최대 4개)을 업데이트합니다. 자율 성장 중 깨달은 중요한 메타 규칙을 저장하세요. 이 원칙은 시스템 프롬프트에 영구적으로 각인됩니다.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "principles": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "최대 4개의 원칙 문자열 배열. (예: ['항상 코드를 짤 때 예외 처리를 우선한다', '사용자의 개입을 최소화한다']) 기존 원칙을 완전히 덮어씁니다."
+                            }
+                        },
+                        "required": ["principles"]
                     }
                 }
             },
@@ -1767,7 +1799,14 @@ class MOPApp(ctk.CTk):
                                 
                         # 일반 도구 (파일 도구 포함 14개 전체 복구됨)
                         elif tc_name == "search_web": tool_result = self.engine.search_web(args_dict.get("query", ""))
-                        elif tc_name == "run_python_snippet": tool_result = self.engine.execute_skill_safely([sys.executable, "./skills/system_tools.py", "--action_type", "python", "--code", args_dict.get("code", "")])                        
+                        elif tc_name == "run_python_snippet":
+                            # AI가 보낸 코드를 임시 파일로 만들어 실행하는 형식이 더 안정적입니다.
+                            code = args_dict.get("code", "")
+                            with open("temp_snippet.py", "w", encoding="utf-8") as f:
+                                f.write(code)
+                            
+                            # sys.executable을 사용하여 가상환경 파이썬으로 실행
+                            tool_result = self.engine.execute_skill_safely([sys.executable, "temp_snippet.py"])                        
                         elif tc_name == "run_shell_command":
                             cmd = args_dict.get("command", "")
                             
@@ -1805,30 +1844,53 @@ class MOPApp(ctk.CTk):
                                 tool_result = "🔍 [과거 기억 회상 결과]\n" + "\n".join([f"- {res}" for res in results])
                             else:
                                 tool_result = "관련된 과거 기억이 없습니다. 'search_web'으로 구글링을 시도하세요."
-                        elif tc_name == "view_file": tool_result = self.engine.execute_skill_safely([sys.executable, "./skills/file_tools.py", "--action", "view", "--path", args_dict.get("file_path", "")])
+                        # 1. 파일 보기 (View)
+                        elif tc_name == "view_file":
+                            tool_result = self.engine.execute_skill_safely([
+                                sys.executable, "./skills/file_tools.py", 
+                                "--action", "view", 
+                                "--path", args_dict.get("file_path", "")
+                            ])
                         
-                        elif tc_name == "find_files": tool_result = self.engine.execute_skill_safely([sys.executable, "./skills/file_tools.py", "--action", "find", "--ext", args_dict.get("extension", "")])
+                        # 2. 파일 찾기 (Find) - 인자 명칭 동기화
+                        elif tc_name == "find_files":
+                            tool_result = self.engine.execute_skill_safely([
+                                sys.executable, "./skills/file_tools.py", 
+                                "--action", "find", 
+                                "--pattern", args_dict.get("extension", "") # --pattern으로 전달
+                            ])
                         
-                        elif tc_name == "search_text": tool_result = self.engine.execute_skill_safely([sys.executable, "./skills/file_tools.py", "--action", "search", "--text", args_dict.get("search_text", ""), "--path", args_dict.get("file_path", "")])
+                        # 3. 텍스트 검색 (Search) - 인자 명칭 동기화
+                        elif tc_name == "search_text":
+                            tool_result = self.engine.execute_skill_safely([
+                                sys.executable, "./skills/file_tools.py", 
+                                "--action", "search", 
+                                "--query", args_dict.get("search_text", ""), # --query로 전달
+                                "--path", args_dict.get("file_path", ".")
+                            ])
+
+                        # 4. 파일 수정 (Edit) - 외부 스크립트 호출 방식으로 변경
                         elif tc_name == "edit_file":
-                            f_path, s_str, r_str = args_dict.get("file_path", ""), args_dict.get("search_string", ""), args_dict.get("replace_string", "")
-                            try:
-                                with open(f_path, 'r', encoding='utf-8') as f: content = f.read()
-                                if s_str not in content: 
-                                    tool_result = "오류: 'search_string'을 찾을 수 없음."
-                                else:
-                                    with open(f_path, 'w', encoding='utf-8') as f: f.write(content.replace(s_str, r_str))
-                                    tool_result = f"성공: '{f_path}' 교체 완료."
-                                    
-                                    # 👇 [신규 패치] 수정한 파일이 파이썬 스크립트라면 문법 검사 강제!
-                                    if f_path.endswith('.py'):
-                                        tool_result += (
-                                            f"\n\n---[시스템 강제 지시 (문법 검증)]---\n"
-                                            f"방금 파이썬 코드를 수정했습니다. 오타나 들여쓰기(Indentation) 오류가 없는지 확인해야 합니다.\n"
-                                            f"다음 단계 로직을 진행하기 전에 반드시 'run_shell_command' 도구로 `python -m py_compile {f_path}` 명령어를 실행하여 문법(Syntax)을 점검하세요."
-                                        )
-                            except Exception as e: 
-                                tool_result = f"오류: 파일 수정 실패 - {e}"
+                            f_path = args_dict.get("file_path", "")
+                            s_str = args_dict.get("search_string", "")
+                            r_str = args_dict.get("replace_string", "")
+                            
+                            # 스크립트 호출 실행
+                            tool_result = self.engine.execute_skill_safely([
+                                sys.executable, "./skills/file_tools.py",
+                                "--action", "edit",
+                                "--path", f_path,
+                                "--old_text", s_str,
+                                "--new_text", r_str
+                            ])
+                            
+                            # 👇 [동기화 핵심] 성공 시 파이썬 파일이면 문법 검사 지시문 추가
+                            if "성공" in tool_result and f_path.endswith('.py'):
+                                tool_result += (
+                                    f"\n\n---[시스템 강제 지시 (문법 검증)]---\n"
+                                    f"방금 파이썬 코드를 수정했습니다. 오타나 들여쓰기 오류가 없는지 확인해야 합니다.\n"
+                                    f"반드시 'run_shell_command' 도구로 `python -m py_compile {f_path}`를 실행하여 문법을 점검하세요."
+                                )
                         elif tc_name == "start_background_task": 
                             cmd = args_dict.get("command", "")
                             
@@ -1891,6 +1953,26 @@ class MOPApp(ctk.CTk):
                                 tool_result = f"성공: 자가 원칙에 '{new_principle}' 내용이 영구적으로 추가되었습니다. 이제 이 원칙을 절대 잊지 않습니다."
                             else:
                                 tool_result = "오류: 원칙 내용이 비어있습니다."
+
+                        elif tc_name == "update_self_principles":
+                            new_principles = args_dict.get("principles", [])
+                            
+                            # 만약 AI가 문자열 하나만 보냈다면 리스트로 감싸줍니다.
+                            if not isinstance(new_principles, list):
+                                new_principles = [str(new_principles)]
+                                
+                            # 👇 [핵심 방어막] 최대 4개까지만 허용하고 나머지는 날립니다.
+                            new_principles = new_principles[:4]
+                            
+                            try:
+                                with open("self_principles.json", "w", encoding="utf-8") as f:
+                                    json.dump(new_principles, f, ensure_ascii=False, indent=4)
+                                
+                                tool_result = f"✅ 성공: 시스템의 자가 원칙이 {len(new_principles)}개로 업데이트 및 각인되었습니다."
+                                self.log_debug(f"🧬 자가 원칙 진화 완료: {new_principles}")
+                            except Exception as e:
+                                tool_result = f"❌ 오류: 자가 원칙 저장 실패 - {e}"
+
                         # ... (기존 도구들 중 하나 밑에 추가) ...
                         elif tc_name == "create_new_tool":
                             t_name = args_dict.get("tool_name", "")
@@ -2130,6 +2212,10 @@ class MOPApp(ctk.CTk):
         idle_prompt = (
             "[시스템 자동 트리거: 유휴 자율 진화 모드 진입]\n"
             "사용자가 자리를 비웠습니다. 지금부터 모든 보안 승인 및 권한 제한이 해제되며, 당신은 루트 디렉토리를 포함한 모든 시스템 파일을 수정할 완전한 권한을 가집니다.\n\n"
+            "💡 [특별 지시: 자가 원칙 점검]\n\n"
+            "작업을 진행하면서 새롭게 깨달은 효율적인 방법론이나 치명적인 실수 방지책이 있다면, "
+            "'update_self_principles' 도구를 사용하여 당신의 핵심 행동 원칙을 갱신하세요. "
+            "원칙은 시스템 전체에 영구적인 영향을 미치며, 최대 4개까지만 가질 수 있으므로 가장 중요하고 범용적인 것으로 엄선해야 합니다.\n\n"
             "---[진화 및 학습 지시사항]---\n"
             "1. [과거 분석]: 아래 제공된 '최근 대화 기록'을 꼼꼼히 분석하세요. 당신이 최근 문제를 해결하는 데 어려움을 겪었거나, 반복적인 노가다를 했다면 어떤 '새로운 파이썬 도구'가 필요한지 추론하세요.\n"
             "2. [도구 창조]: 필요성이 확인되면 즉시 `create_new_tool` 도구를 호출하여 스스로 새로운 기능을 제작하고 시스템에 등록하세요. 또는 `edit_file`을 사용하여 기존 도구나 앱의 코드를 직접 수정/개선하세요.\n"

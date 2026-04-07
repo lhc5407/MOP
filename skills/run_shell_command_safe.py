@@ -1,3 +1,4 @@
+import subprocess
 def run_shell_command_safe(command: str) -> str:
     """
     터미널 명령어를 안전하게 실행하고 결과를 반환합니다.
