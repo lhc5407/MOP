@@ -1,72 +1,60 @@
-# 🤖 MOP (Multi-agent Orchestration Platform)
+# 🤖 MOP (Main Operating Process) : 자율 진화형 로컬 AI 에이전트
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](#)
-[![GUI](https://img.shields.io/badge/GUI-CustomTkinter-blueviolet)](#)
-[![LLM Engine](https://img.shields.io/badge/Engine-llama.cpp-green)](#)
-[![License](https://img.shields.io/badge/License-MIT-orange)](#)
+MOP는 완전한 로컬 환경(Local Environment)에서 구동되며, 스스로 코드를 작성하고 시스템을 제어하며 장기 기억을 바탕으로 자율적으로 성장하는 **지능형 데스크톱 AI 에이전트**입니다. 
 
-**MOP**는 로컬 환경에서 구동되는 고성능 자율 AI 에이전트 오케스트레이션 플랫폼입니다. 단순한 대화형 인터페이스를 넘어, 파일 시스템을 제어하고 다중 에이전트를 생성하며 장기적인 과업을 병렬로 수행할 수 있는 완벽한 '에이전트 하네스(Agent Harness)' 인프라를 제공합니다.
+단순한 챗봇을 넘어, 사용자의 개입 없이도 백그라운드에서 스스로 도구를 만들고 검증(TDD)하며, 가상환경(venv) 내에서 안전하게 OS 명령어와 파이썬 스크립트를 실행합니다.
+
+---
 
 ## ✨ 핵심 기능 (Key Features)
 
-### 1. 🚀 비동기 백그라운드 오케스트레이션 (Background Tasks)
-에이전트가 시간이 오래 걸리는 터미널 작업(예: 대규모 패키지 설치, 파일 압축, 서버 구동)을 백그라운드(`start_background_task`)로 던져두고 즉시 다른 작업을 병렬로 수행합니다. 진정한 의미의 멀티태스킹을 지원하여 전체 작업 시간을 획기적으로 단축합니다.
+### 🧠 1. 로컬 LLM & 지능형 메모리 관리
+* **로컬 모델 구동:** `llama-cpp-python` 기반으로 외부 API 종속 없이 GGUF 모델을 완벽하게 로컬에서 구동합니다.
+* **KV 캐시 양자화(Quantization):** FP16, Q8_0, Q4_0 등 컨텍스트 메모리 압축 기술을 적용하여 무한히 길어지는 대화에서도 VRAM을 극도로 절약합니다.
+* **장기 기억(Vector DB):** 대화 내용 중 중요한 에러 해결책, 사용자의 취향 등을 Vector DB에 영구 저장하고, 의미 기반(Semantic)으로 검색하여 활용합니다.
 
-### 2. 🧠 서브에이전트를 통한 컨텍스트 격리 (Context Isolation)
-방대한 코드나 문서를 분석할 때, 메인 에이전트의 메모리(Context Window)가 오염되는 것을 방지합니다. 일회용 서브에이전트(`delegate_to_sub_agent`)를 소환하여 독립된 환경에서 데이터를 분석하고 핵심 요약 보고서만 메인 뇌로 전달받아 환각(Hallucination) 현상을 원천 차단합니다.
+### ⚙️ 2. 자율 성장 & TDD (테스트 주도 개발) 루프
+* **자율 성장 모드 (Idle Mode):** 사용자가 자리를 비우면 AI가 스스로 작동하여 코드를 작성하고 시스템을 최적화합니다.
+* **동적 도구 생성 (`create_new_tool`):** AI가 스스로 파이썬 도구(Tool)를 작성하고 `custom_tools.json`에 영구 등록하여 다음 턴부터 즉시 사용합니다.
+* **강제 2단계 컴파일 검증:** 파일 수정(`edit_file`, `append_to_file`) 및 새 도구 생성 시, 실행 전 반드시 `python -m py_compile`을 통해 문법 에러(Syntax Error)를 사전 차단합니다.
 
-### 3. 🛡️ 품질 게이트와 안전 통제 체계 (Plan Mode & Quality Gate)
-강력한 힘에는 통제가 필요합니다. `Plan Mode`가 활성화되면 에이전트가 파일 쓰기, 삭제, 시스템 명령어 등 '위험한 도구'를 사용하기 직전, 직관적인 UI 모달을 띄워 사용자에게 승인(결재)을 요청합니다.
-- 승인 시: 즉시 작업 수행
-- 거절 시: 에이전트에게 '차단됨' 컨텍스트를 반환하여 안전한 우회 경로를 스스로 탐색하게 유도
+### 🛡️ 3. 무적의 시스템 방어막 (Safety & Shielding)
+* **Venv Lock (가상환경 납치):** AI가 쉘 명령어에서 `python`이나 `pip`를 호출할 경우, 정규식을 통해 시스템 파이썬이 아닌 `sys.executable` (현재 가상환경)로 강제 매핑하여 의존성 충돌을 막습니다.
+* **코어 패키지 보호:** AI가 자율 모드 중 `llama-cpp-python`, `torch` 등 시스템의 핵심 뇌를 건드리는 패키지를 덮어씌우려(업데이트) 할 경우, 쉘 도달 전에 즉시 차단합니다.
+* **윈도우 CMD 버그 방어:** 경로에 띄어쓰기가 있을 때 윈도우의 따옴표(`"`) 증발 버그를 막기 위해 명령어를 안전하게 이중 래핑(Wrapping)합니다.
+* **스레드 안전성(Thread-Safety):** 자율 모드나 수면 모드 구동 중 사용자의 채팅 입력을 물리적/시각적으로 차단(Disable)하여 데이터베이스 및 엔진 충돌을 원천 봉쇄합니다.
 
-### 4. 🦎 디렉토리 맞춤형 동적 환경 적응 (Meta-Harness)
-에이전트가 실행되는 작업 폴더(CWD)에 `.mop_rules.md` 파일이 존재할 경우, 이를 자동으로 감지하여 에이전트의 뇌(System Prompt)에 최우선 지침으로 융합합니다. 폴더를 이동할 때마다 '프론트엔드 전문가', '파이썬 데이터 분석가' 등으로 스스로 페르소나와 작업 원칙을 갈아끼웁니다.
-
-### 5. 📈 자가 학습 및 영구적 기억 (Self-Learning Principles)
-작업 중 에러를 극복하거나 사용자의 피드백을 받으면, 에이전트가 스스로 깨달음을 요약하여 `학습된 자가 원칙`에 영구적으로 저장(`mop_config.json`)합니다. 앱을 재부팅해도 에이전트는 어제의 실수를 반복하지 않고 진화합니다.
-
-### 6. 🧟 불사조 아키텍처 및 서킷 브레이커 (Resilience)
-- **전역 에러 핸들러:** GUI나 백그라운드 스레드에서 발생하는 파이썬 런타임 에러를 낚아채어 앱이 튕기는 것을 방지하고 디버그 로그로 전환합니다.
-- **오토 리부트:** C++ 레벨의 VRAM 초과 등 치명적 오류로 앱이 죽더라도, 즉시 재가동 루프를 통해 시스템을 자동 복구합니다.
-- **무한 루프 방지:** AI의 환각으로 인한 동일 도구 연속 호출을 감지하면 서킷 브레이커가 작동하여 즉시 작업을 중단시키고 안정화합니다.
-
----
-
-## 🛠️ 시스템 아키텍처 (Architecture)
-
-MOP는 크게 세 가지 계층으로 이루어져 있습니다.
-1. **UI Layer (`MOPApp`):** CustomTkinter 기반의 유려한 다크모드 인터페이스. 에이전트 상태 모니터링, 시스템 프롬프트 편집, Plan Mode 토글 등을 지원합니다.
-2. **Engine Layer (`MOPEngine`):** 에이전트의 사고 루프(ReAct), 도구 라우팅, 메모리(SQLite) 관리, 서브에이전트 관리를 담당합니다.
-3. **Execution Layer:** 파일 I/O, 터미널 제어, 마우스/키보드 자동화, 웹 검색 등 실제 환경과 상호작용하는 40여 개의 도구 스택.
+### 🎨 4. 직관적이고 세련된 UI (CustomTkinter)
+* **사고 과정 분리 (Toggle UI):** AI의 복잡한 추론 과정(`<think>` 블록)을 내부적으로 파싱하여, UI 상에서는 깔끔한 접기/펴기(Toggle) 버튼으로 제공합니다.
+* **지능형 JSON 파싱:** AI가 출력 도중 괄호를 누락하더라도 스스로 열고 닫힌 괄호를 계산하여 복구하는 안전장치가 적용되어 있습니다.
+* **수면/최적화 상태 UI:** 시스템의 상태(대기, 작업 중, 수면 중)를 실시간으로 모니터링하여 버튼 상태와 텍스트로 사용자에게 명확히 피드백합니다.
 
 ---
 
-## 🚀 시작하기 (Getting Started)
+## 🛠️ 기술 스택 (Tech Stack)
+- **Language:** Python 3.10+
+- **AI Backend:** `llama-cpp-python`
+- **UI Framework:** `CustomTkinter`
+- **Memory:** SQLite (Short-term), Vector DB (Long-term / Semantic Search)
+- **OS Support:** Windows (최적화)
 
-### 사전 요구 사항 (Prerequisites)
-- Python 3.10 이상
-- 로컬 LLM 구동을 위한 `llama-cpp-python` 및 호환되는 `.gguf` 모델 파일
-- (권장) VRAM 8GB 이상의 GPU 환경
+---
 
-### 설치 및 실행
-```bash
-# 1. 저장소 클론
-git clone [https://github.com/your-username/MOP.git](https://github.com/your-username/MOP.git)
-cd MOP
+## 🚀 주요 모드 설명
 
-# 2. 의존성 패키지 설치
-pip install -r requirements.txt
+### 🌙 수면 모드 (Deep Sleep Consolidation)
+사용자가 `뇌 최적화 및 수면` 버튼을 누르면 작동합니다.
+1. 단기 기억(`chat_history.db`)을 요약 및 비워내어 컨텍스트 과부하를 방지합니다.
+2. 이전 대화 중 영구 보존할 가치가 있는 핵심 기억을 추출하여 Vector DB에 이관합니다.
+3. 수면 중에는 자율 성장 루틴이나 사용자의 채팅 입력을 차단하여 데이터 무결성을 유지합니다.
 
-# 3. 모델 파일 배치
-# 호환되는 .gguf 파일을 ./models/ 디렉토리에 위치시킵니다.
+### 🌱 자율 성장 모드 (Autonomous Growth)
+일정 시간 사용자의 입력이 없으면 모니터링 루프가 이를 감지하여 작동합니다.
+1. 스스로 환경을 파악하고, 백그라운드 쉘을 통해 코드를 작성 및 테스트합니다.
+2. 다중 작업이 필요할 경우 하위 에이전트에게 병렬로 위임(`delegate_parallel_task`)하고 결과를 취합합니다.
 
-# 4. 시스템 실행
-python mop_app.py
-💡 활용 팁 (Pro Tips)
-프로젝트 도메인 지식 주입: 현재 작업 중인 코드 디렉토리 루트에 .mop_rules.md 파일을 만들고 팀의 코딩 컨벤션이나 요구사항을 적어두세요. MOP가 이를 가장 먼저 숙지하고 작업을 시작합니다.
+---
 
-UI 설정 세밀 조정: 좌측 사이드바 메뉴를 통해 에이전트의 창의성(Temperature)을 조절하거나, '학습된 자가 원칙 관리' 버튼을 눌러 AI의 뇌 구조를 직접 튜닝할 수 있습니다.
-
-📄 라이선스 (License)
-이 프로젝트는 MIT License에 따라 배포됩니다. 자유롭게 활용하고, 수정하고, 공유하세요!
+## ⚠️ 주의 사항 (Disclaimer)
+- 본 에이전트는 로컬 시스템의 파일 읽기/쓰기 및 쉘 명령어 실행 권한을 가지고 있습니다. 프로젝트 폴더 외부의 중요한 시스템 파일을 건드리지 않도록 시스템 프롬프트(지침)를 유지해 주세요.
+- 가상환경(venv) 내에서 실행하는 것을 강력히 권장합니다.
