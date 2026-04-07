@@ -314,11 +314,11 @@ class MOPEngine:
             "5. [코딩 작업 지시서(Plan)]: 복잡한 코딩 요청을 받으면, 메모장이나 텍스트 파일에 '작업 계획서'를 먼저 작성하세요.\n"
             "6. [환경 파악]: 코드를 짜기 전에 'run_shell_command'로 환경을 먼저 확인하는 습관을 들이세요.\n"
             "7. [누적형 코딩 프로토콜]: 길이가 긴 파이썬 코드를 작성해야 할 경우, run_python_snippet으로 한 번에 출력하려다 토큰 제한에 걸려 잘리지 마세요. 대신 append_to_file 도구를 사용하여 workspace.py 같은 파일에 '1단계: 모듈 임포트', '2단계: 데이터 수집', '3단계: 로직 계산' 식으로 여러 번에 걸쳐 코드를 누적해 나가세요. 작성이 모두 끝나면 run_shell_command로 python workspace.py를 실행하여 통합 결과를 도출하세요.\n"
-            "8. [단계별 체크포인트 전략]: 에러가 발생하면 전체 파일을 다시 처음부터 쓰지 마세요. 시스템이 알려주는 '실패 단계'를 확인하고, 해당 부분의 로직만 수정하여 다시 이어 붙이거나(Append) 패치(Edit) 하세요. 당신은 이전에 성공한 단계의 데이터를 신뢰할 수 있습니다.\n"
-            "9. [토큰 낭비 방지]: 절대 <think> 태그를 사용하여 속마음을 출력하지 마세요. 불필요한 독백을 생략하고 즉시 도구 호출 JSON만 출력하세요.\n"
-            "10. [대기 멘트 금지]: 도구 호출 전후에 '잠시 기다려주세요' 등의 변명을 절대 하지 마세요. 결과를 읽는 즉시 다음 도구를 연속 호출하거나 답변하세요.\n"
-            "11. [작업 계획 및 체크리스트]: 여러 단계의 복합 지시를 받으면, 첫 번째 도구를 호출하기 전 속마음(<think>)에 '전체 작업 체크리스트'를 작성하세요. 도구 호출 결과가 돌아올 때마다 체크리스트의 어떤 항목이 완료되었고, 어떤 항목이 남았는지 명시한 뒤 다음 단계를 즉시 수행하세요. 모든 번호가 매겨진 지시 사항이 물리적으로 완수되기 전에는 절대로 대화를 종료하지 마세요.\n"
-            "12. [JSON 텍스트 규칙]: JSON의 Key와 Value를 감싸는 구조적 기호는 반드시 표준 규격인 쌍따옴표(\")를 사용하세요. 단, Value 내부에 들어가는 '파이썬 코드'나 '단순 텍스트' 안에서 또 다른 따옴표가 필요할 때만 홑따옴표(')를 사용하세요. (잘못된 예: {\"text\": '안녕'}, 올바른 예: {\"text\": \"print('성공')\"} 또는 {\"text\": \"성공 완료!\"})\n"
+            "8. [단계별 체크포인트 전략]: 에러가 발생하면 전체 파일을 다시 처음부터 쓰지 마세요. 실패한 단계만 파악하고 해당 부분만 수정하여 패치(Edit)하세요.\n"
+            "9. [사고 과정 허용]: 작업을 시작하거나 도구를 호출하기 전, 반드시 `<think> ... </think>` 태그 블록을 열어 상황을 분석하고 앞으로의 계획을 작성하세요.\n"
+            "10. [JSON 즉시 출력]: `<think>` 블록이 끝났다면, 그 즉시 변명이나 대기 멘트 없이 곧바로 ```json 블록을 출력하여 도구를 호출하세요.\n"
+            "11. [작업 계획 및 체크리스트]: 여러 단계의 지시를 받으면 `<think>` 블록 안에 1. 2. 3. 번호를 매겨 체크리스트를 작성하고 하나씩 완수해 나가세요.\n"
+            "12. [JSON 텍스트 규칙]: JSON의 Key와 Value를 감싸는 구조적 기호는 반드시 표준 규격인 쌍따옴표(\")를 사용하세요.\n"
             "13. [시간 인지 강제화]: 시스템이 맨 윗줄에 제공한 '현재 시간'이 이 세계의 절대적인 기준입니다. 당신의 훈련 데이터 시점(과거)을 기준으로 현재 시간을 '미래'라고 판단하거나 변명하지 마세요. 현재 시간을 기준으로 모든 상황을 해석하세요.\n"
             "14. [글로벌 검색 프로토콜]: search_web 도구를 사용할 때는 사용자의 지시가 한국어라도 반드시 검색어를 영어로 번역해서 도구를 호출하세요. 검색된 영어 원문 데이터를 읽고 나면, 사용자에게 보고하거나 파일에 기록할 때는 완벽하고 자연스러운 한국어로 번역 및 요약해야 합니다.\n"
             "15. [OS 환경]: 당신은 현재 Windows 환경에서 실행 중입니다. 터미널 명령어는 반드시 윈도우 CMD 기준으로 작성하세요. (예: pwd 대신 cd, ls 대신 dir, mkdir -p 대신 mkdir 사용)\n"
@@ -1684,8 +1684,19 @@ class MOPApp(ctk.CTk):
                                 
                         # 일반 도구 (파일 도구 포함 14개 전체 복구됨)
                         elif tc_name == "search_web": tool_result = self.engine.search_web(args_dict.get("query", ""))
-                        elif tc_name == "run_python_snippet": tool_result = self.engine.execute_skill_safely(["python", "./skills/system_tools.py", "--action_type", "python", "--code", args_dict.get("code", "")])
-                        elif tc_name == "run_shell_command": tool_result = self.engine.execute_skill_safely(["cmd", "/c", args_dict.get("command", "")])
+                        elif tc_name == "run_python_snippet": tool_result = self.engine.execute_skill_safely([sys.executable, "./skills/system_tools.py", "--action_type", "python", "--code", args_dict.get("code", "")])                        
+                        elif tc_name == "run_shell_command":
+                            cmd = args_dict.get("command", "")
+                            
+                            # 👇 [강력한 패치] 명령어 중간에 있는 python이나 pip를 추적하여 완벽하게 가상환경으로 납치합니다.
+                            # 단어 단위(\b)로 정확히 python이나 pip일 때만 가상환경 경로로 치환
+                            cmd = re.sub(r'\bpython\b', f'"{sys.executable}"', cmd)
+                            # pip는 가상환경 파이썬을 이용한 모듈 실행(-m pip) 방식으로 안전하게 치환
+                            cmd = re.sub(r'\bpip\b', f'"{sys.executable}" -m pip', cmd)
+                            
+                            self.log_debug(f"💻 쉘 명령어 가상환경 매핑 완료: {cmd}")
+                            tool_result = self.engine.execute_skill_safely(["cmd", "/c", cmd])
+
                         elif tc_name == "save_long_term_memory":
                             mem_text = args_dict.get("text", "")
                             if mem_text:
@@ -1701,20 +1712,38 @@ class MOPApp(ctk.CTk):
                                 tool_result = "🔍 [과거 기억 회상 결과]\n" + "\n".join([f"- {res}" for res in results])
                             else:
                                 tool_result = "관련된 과거 기억이 없습니다. 'search_web'으로 구글링을 시도하세요."
-                        elif tc_name == "view_file": tool_result = self.engine.execute_skill_safely(["python", "./skills/file_tools.py", "--action", "view", "--path", args_dict.get("file_path", "")])
-                        elif tc_name == "find_files": tool_result = self.engine.execute_skill_safely(["python", "./skills/file_tools.py", "--action", "find", "--ext", args_dict.get("extension", "")])
-                        elif tc_name == "search_text": tool_result = self.engine.execute_skill_safely(["python", "./skills/file_tools.py", "--action", "search", "--text", args_dict.get("search_text", ""), "--path", args_dict.get("file_path", "")])
+                        elif tc_name == "view_file": tool_result = self.engine.execute_skill_safely([sys.executable, "./skills/file_tools.py", "--action", "view", "--path", args_dict.get("file_path", "")])
+                        
+                        elif tc_name == "find_files": tool_result = self.engine.execute_skill_safely([sys.executable, "./skills/file_tools.py", "--action", "find", "--ext", args_dict.get("extension", "")])
+                        
+                        elif tc_name == "search_text": tool_result = self.engine.execute_skill_safely([sys.executable, "./skills/file_tools.py", "--action", "search", "--text", args_dict.get("search_text", ""), "--path", args_dict.get("file_path", "")])
                         elif tc_name == "edit_file":
                             f_path, s_str, r_str = args_dict.get("file_path", ""), args_dict.get("search_string", ""), args_dict.get("replace_string", "")
                             try:
                                 with open(f_path, 'r', encoding='utf-8') as f: content = f.read()
-                                if s_str not in content: tool_result = "오류: 'search_string'을 찾을 수 없음."
+                                if s_str not in content: 
+                                    tool_result = "오류: 'search_string'을 찾을 수 없음."
                                 else:
                                     with open(f_path, 'w', encoding='utf-8') as f: f.write(content.replace(s_str, r_str))
                                     tool_result = f"성공: '{f_path}' 교체 완료."
-                            except Exception as e: tool_result = f"오류: 파일 수정 실패 - {e}"
+                                    
+                                    # 👇 [신규 패치] 수정한 파일이 파이썬 스크립트라면 문법 검사 강제!
+                                    if f_path.endswith('.py'):
+                                        tool_result += (
+                                            f"\n\n---[시스템 강제 지시 (문법 검증)]---\n"
+                                            f"방금 파이썬 코드를 수정했습니다. 오타나 들여쓰기(Indentation) 오류가 없는지 확인해야 합니다.\n"
+                                            f"다음 단계 로직을 진행하기 전에 반드시 'run_shell_command' 도구로 `python -m py_compile {f_path}` 명령어를 실행하여 문법(Syntax)을 점검하세요."
+                                        )
+                            except Exception as e: 
+                                tool_result = f"오류: 파일 수정 실패 - {e}"
                         elif tc_name == "start_background_task": 
-                            tool_result = self.engine.start_background_task(args_dict.get("command", ""))
+                            cmd = args_dict.get("command", "")
+                            
+                            cmd = re.sub(r'\bpython\b', f'"{sys.executable}"', cmd)
+                            cmd = re.sub(r'\bpip\b', f'"{sys.executable}" -m pip', cmd)
+                            
+                            tool_result = self.engine.start_background_task(cmd)
+
                         elif tc_name == "check_task_status": 
                             tool_result = self.engine.check_task_status(args_dict.get("task_id", ""))
                             
@@ -1729,14 +1758,20 @@ class MOPApp(ctk.CTk):
                             tool_result = self.engine.join_sub_agent_results(args_dict.get("task_ids", []))
                         elif tc_name == "append_to_file":
                             f_path = args_dict.get("file_path", "")
-                            
-                            # 👇 [핵심 패치] AI가 헷갈려하는 파라미터 이름들을 모두 포용합니다.
                             content = args_dict.get("content") or args_dict.get("code") or args_dict.get("text") or ""
                             
                             try:
                                 with open(f_path, 'a', encoding='utf-8') as f:
                                     f.write(content + "\n\n")
                                 tool_result = f"성공: '{f_path}' 파일 끝에 코드 조각이 안전하게 추가되었습니다."
+                                
+                                # 👇 [신규 패치] 코드를 이어 붙인 후 괄호 짝이나 들여쓰기가 맞는지 강제 검사!
+                                if f_path.endswith('.py'):
+                                    tool_result += (
+                                        f"\n\n---[시스템 강제 지시 (문법 검증)]---\n"
+                                        f"기존 코드 끝에 새로운 코드를 덧붙였기 때문에 괄호 누락이나 들여쓰기 충돌이 발생하기 매우 쉽습니다.\n"
+                                        f"지금 즉시 'run_shell_command'를 사용하여 `python -m py_compile {f_path}`를 실행하세요. 에러가 나면 'edit_file'로 고치고 넘어가야 합니다."
+                                    )
                             except Exception as e:
                                 tool_result = f"오류: 코드 누적 실패 - {e}"
                         elif tc_name == "save_principle":
@@ -1800,16 +1835,15 @@ class MOPApp(ctk.CTk):
                                 with open(registry_path, "w", encoding="utf-8") as f:
                                     json.dump(custom_tools, f, ensure_ascii=False, indent=4)
                                     
-                                # 👇 [핵심 패치] AI에게 스스로 만든 도구를 즉시 테스트하도록 강제 지시!
+                                # 👇 [핵심 패치] 생성 후 2단계 검증 사이클 완벽 주입
                                 tool_result = (
                                     f"✅ 성공: 새 도구 '{t_name}'가 완벽하게 생성되어 시스템에 등록되었습니다.\n\n"
-                                    f"---[시스템 강제 지시 (TDD 검증)]---\n"
-                                    f"방금 당신이 만든 이 도구가 진짜로 작동하는지 확인해야 합니다.\n"
-                                    f"지금 즉시 이 다음 턴에 '{t_name}' 도구를 호출하여 예시 데이터를 넣고 테스트를 진행하세요.\n"
-                                    f"만약 파이썬 문법 에러나 논리적 오류가 반환된다면, 변명하지 말고 즉시 'edit_file' 도구를 써서 './skills/{t_name}.py' 코드를 수정한 뒤 다시 테스트하세요."
+                                    f"---[시스템 강제 지시 (2단계 TDD 검증)]---\n"
+                                    f"방금 만든 코드를 즉시 검증해야 합니다. 다음 두 단계를 엄격히 순서대로 실행하세요.\n"
+                                    f"1. [안전 문법 검사]: 먼저 'run_shell_command'를 호출하여 `python -m py_compile skills/{t_name}.py`를 실행하세요. 에러가 나면 'edit_file'로 즉시 고쳐야 합니다.\n"
+                                    f"2. [실전 로직 테스트]: 문법 검사를 무사히 통과했다면, 이번엔 '{t_name}' 도구를 직접 호출하여 예시 데이터를 넣고 결과값이 정상적으로 도출되는지 확인하세요."
                                 )
                             except Exception as e:
-                                # try와 정확히 같은 들여쓰기 라인에 위치!
                                 tool_result = f"오류: 도구 생성 실패 - {e}"
                         else: 
                             # 👇 [신규 패치] 기본 도구가 아니라면, 내가 만든 커스텀 도구인지 레지스트리 확인!
@@ -1824,8 +1858,8 @@ class MOPApp(ctk.CTk):
                             if is_custom_tool:
                                 py_path = os.path.join("skills", f"{tc_name}.py")
                                 if os.path.exists(py_path):
-                                    # 파라미터들을 커맨드라인 인자(--key value)로 변환
-                                    cli_args = ["python", py_path]
+                                    # 👇 [핵심 패치] 여기서도 "python" 대신 sys.executable 사용
+                                    cli_args = [sys.executable, py_path]
                                     for k, v in args_dict.items():
                                         cli_args.extend([f"--{k}", str(v)])
                                     
