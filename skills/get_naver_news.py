@@ -1,41 +1,50 @@
+# 1 단계: 모듈 임포트
 import requests
-from bs4 import BeautifulSoup
-import json
+import xml.etree.ElementTree as ET
+from datetime import datetime
 
-def get_naver_news(query, count=5):
-    """네이버 뉴스 검색 결과를 크롤링하여 구조화된 데이터를 반환합니다."""
-    url = f'https://search.naver.com/search.naver?where=news&q={query}'
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-    
+# 네이버 뉴스 RSS 피드 URL
+NAVER_NEWS_RSS_URL = "https://news.naver.com/main/rss/popular/news?category=popular&order=hot"
+
+def get_naver_news():
+    """
+    네이버 뉴스 RSS 피드를 크롤링하여 최신 뉴스 목록을 반환합니다.
+    """
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        # 2 단계: 요청 보내기
+        response = requests.get(NAVER_NEWS_RSS_URL, timeout=10)
         response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'lxml')
+        
+        # 3 단계: XML 파싱
+        root = ET.fromstring(response.content)
         
         news_list = []
-        items = soup.select('div.news_list li')
-        
-        for item in items[:count]:
-            title = item.select_one('a.news_title')
-            link = item.select_one('a.news_link')
-            date = item.select_one('span.news_date')
+        # 4 단계: 뉴스 항목 추출
+        for item in root.findall('.//item'):
+            title_elem = item.find('title')
+            link_elem = item.find('link')
+            pubdate_elem = item.find('pubDate')
             
-            if title and link:
-                news_list.append({
-                    'title': title.text.strip(),
-                    'link': link.get('href', '').strip(),
-                    'date': date.text.strip() if date else 'N/A'
-                })
+            if title_elem is not None and link_elem is not None:
+                news_item = {
+                    'title': title_elem.text.strip(),
+                    'link': link_elem.text.strip(),
+                    'pubDate': pubdate_elem.text.strip() if pubdate_elem is not None else None
+                }
+                news_list.append(news_item)
         
         return news_list
     except Exception as e:
-        return {'error': str(e)}
-
-
-
+        print(f"Error fetching Naver News: {e}")
+        return []
 
 if __name__ == "__main__":
-    test_query = "인공지능"
-    result = get_naver_news(test_query)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    news = get_naver_news()
+    for i, news_item in enumerate(news, 1):
+        print(f"{i}. {news_item['title']}")
+        print(f"   Link: {news_item['link']}")
+        if news_item['pubDate']:
+            print(f"   Date: {news_item['pubDate']}")
+        print("-" * 30)
+
 

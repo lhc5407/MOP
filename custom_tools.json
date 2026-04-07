@@ -10,5 +10,53 @@
                 "required": []
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_naver_news",
+            "description": "Crawls Naver News RSS feed to retrieve latest news articles for a specific query.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_naver_news_via_serpapi",
+            "description": "Uses SerpApi to fetch Naver News results for a given query.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_shell_command_safe",
+            "description": "이스케이프 문자를 자동으로 처리하여 터미널 명령어를 안전하게 실행합니다.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_shell_command_with_capture",
+            "description": "Executes a shell command, captures stdout/stderr, and returns the result. Optionally saves output to a file and returns the file path.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
     }
 ]

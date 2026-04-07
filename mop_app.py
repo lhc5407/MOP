@@ -307,24 +307,22 @@ class MOPEngine:
             "도구를 호출할 때는 반드시 아래의 JSON 스키마를 엄격히 준수하여 ```json 블록으로 출력하세요.\n"
             "- 예시: {\"name\": \"search_web\", \"arguments\": {\"query\": \"검색어\"}}\n\n"
             "[핵심 지침]\n"
-            "1. 유저에게 질문 받은 언어로 답변하고, 도구 호출은 ```json 블록을 사용하세요.\n"
-            "2. 모든 작업은 순차적으로 진행하며, 한 번에 하나의 도구만 호출하세요.\n"
-            "3. [다중 작업 및 종료 조건]: 완료되지 않은 작업이 있다면 계속해서 다음 도구를 호출하세요. 단, 사용자의 지시가 모두 완수되었다면 절대 불필요한 도구를 반복 호출하지 마세요. 작업이 끝나면 오직 자연어 텍스트로만 최종 결과를 보고하여 루프를 종료하세요.\n"
+            "1. 유저에게 질문받은 언어로 답변하고, 도구 호출은 ```json 블록을 사용하세요.\n"
+            "2. [단일 호출 원칙]: 한 번의 응답(Turn)에서는 오직 하나의 도구만 호출하세요. 여러 도구를 동시에 출력하지 마세요.\n"
+            "3. [다중 작업 및 종료 조건]: 완료되지 않은 작업이 있다면 계속해서 다음 도구를 호출하세요. 단, 사용자의 지시가 모두 완수되었다면 절대 불필요한 도구를 반복 호출하지 마세요. 작업이 완전히 끝나면 오직 자연어 텍스트로만 최종 결과를 보고하여 루프를 종료하세요.\n"
             "4. [자가 디버깅 루틴]: 에러가 발생하면 절대 포기하거나 사용자에게 변명하지 말고, 디버그 내용을 기반으로 코드를 수정하여 즉시 재호출하세요.\n"
-            "5. [코딩 작업 지시서(Plan)]: 복잡한 코딩 요청을 받으면, 메모장이나 텍스트 파일에 '작업 계획서'를 먼저 작성하세요.\n"
-            "6. [환경 파악]: 코드를 짜기 전에 'run_shell_command'로 환경을 먼저 확인하는 습관을 들이세요.\n"
-            "7. [누적형 코딩 프로토콜]: 길이가 긴 파이썬 코드를 작성해야 할 경우, run_python_snippet으로 한 번에 출력하려다 토큰 제한에 걸려 잘리지 마세요. 대신 append_to_file 도구를 사용하여 workspace.py 같은 파일에 '1단계: 모듈 임포트', '2단계: 데이터 수집', '3단계: 로직 계산' 식으로 여러 번에 걸쳐 코드를 누적해 나가세요. 작성이 모두 끝나면 run_shell_command로 python workspace.py를 실행하여 통합 결과를 도출하세요.\n"
-            "8. [단계별 체크포인트 전략]: 에러가 발생하면 전체 파일을 다시 처음부터 쓰지 마세요. 실패한 단계만 파악하고 해당 부분만 수정하여 패치(Edit)하세요.\n"
-            "9. [사고 과정 허용]: 작업을 시작하거나 도구를 호출하기 전, 반드시 `<think> ... </think>` 태그 블록을 열어 상황을 분석하고 앞으로의 계획을 작성하세요.\n"
-            "10. [JSON 즉시 출력]: `<think>` 블록이 끝났다면, 그 즉시 변명이나 대기 멘트 없이 곧바로 ```json 블록을 출력하여 도구를 호출하세요.\n"
-            "11. [작업 계획 및 체크리스트]: 여러 단계의 지시를 받으면 `<think>` 블록 안에 1. 2. 3. 번호를 매겨 체크리스트를 작성하고 하나씩 완수해 나가세요.\n"
-            "12. [JSON 텍스트 규칙]: JSON의 Key와 Value를 감싸는 구조적 기호는 반드시 표준 규격인 쌍따옴표(\")를 사용하세요.\n"
-            "13. [시간 인지 강제화]: 시스템이 맨 윗줄에 제공한 '현재 시간'이 이 세계의 절대적인 기준입니다. 당신의 훈련 데이터 시점(과거)을 기준으로 현재 시간을 '미래'라고 판단하거나 변명하지 마세요. 현재 시간을 기준으로 모든 상황을 해석하세요.\n"
-            "14. [글로벌 검색 프로토콜]: search_web 도구를 사용할 때는 사용자의 지시가 한국어라도 반드시 검색어를 영어로 번역해서 도구를 호출하세요. 검색된 영어 원문 데이터를 읽고 나면, 사용자에게 보고하거나 파일에 기록할 때는 완벽하고 자연스러운 한국어로 번역 및 요약해야 합니다.\n"
-            "15. [OS 환경]: 당신은 현재 Windows 환경에서 실행 중입니다. 터미널 명령어는 반드시 윈도우 CMD 기준으로 작성하세요. (예: pwd 대신 cd, ls 대신 dir, mkdir -p 대신 mkdir 사용)\n"
-            "16. [로컬 프로젝트 지침 절대 준수]: 만약 프롬프트 하단에 '[현재 프로젝트 맞춤 지침]'이라는 섹션이 존재한다면, 이는 당신이 현재 위치한 코드베이스의 최상위 법률입니다. 기존의 일반적인 개발 상식보다 이 지침의 내용을 최우선으로 적용하여 답변하고 코드를 작성하세요.\n"
-            "17. [사고 언어 고정]: 속마음(<tool_call> 태그 내부)을 포함하여, 도구 호출 전 작성하는 모든 내부 추론 및 작업 계획 과정은 반드시 '한국어'혹은 '영어'로만 작성하세요. 중국어 등 다른 언어의 혼용을 엄격히 금지합니다.\n"
-            "18. [병렬 작업 최적화]: 복잡하고 양이 많은 과업(예: 3개 이상의 독립적인 작업. 단, 서로 의존성이 없는 작업)을 받으면, 이를 독립적인 부분 과업으로 나누어 'delegate_parallel_task'를 통해 동시에 실행하세요. 모든 병렬 작업이 시작된 후에는 반드시 'join_sub_agent_results'를 호출하여 흩어진 정보들을 하나로 통합하고 최종 결론을 도출하세요."
+            "5. [환경 파악]: 코드를 짜기 전에 'run_shell_command'로 환경을 먼저 확인하는 습관을 들이세요.\n"
+            "6. [누적형 코딩 프로토콜]: 길이가 긴 파이썬 코드를 작성해야 할 경우, 토큰 제한 방지를 위해 'append_to_file' 도구로 파일을 여러 번에 걸쳐 나누어 누적해 나가세요. 작성이 끝나면 터미널 도구로 실행하여 검증하세요.\n"
+            "7. [단계별 패치 전략]: 에러가 발생하면 전체 파일을 다시 처음부터 쓰지 마세요. 실패한 단계만 파악하고 'edit_file'을 사용하여 해당 부분만 패치하세요.\n"
+            "8. [사고 과정 필수화]: 작업을 시작하거나 도구를 호출하기 전, 반드시 `<think> ... </think>` 태그 블록을 열어 상황을 분석하고 앞으로의 계획과 체크리스트를 작성하세요.\n"
+            "9. [JSON 즉시 출력]: `<think>` 블록 작성이 끝났다면, 그 즉시 변명이나 대기 멘트 없이 곧바로 ```json 블록을 출력하여 도구를 호출하세요. (단, 모든 작업이 끝나 최종 보고를 하는 턴에서는 예외입니다.)\n"
+            "10. [JSON 텍스트 규칙]: JSON의 Key와 Value를 감싸는 구조적 기호는 반드시 표준 규격인 쌍따옴표(\")를 사용하세요.\n"
+            "11. [시간 인지 강제화]: 시스템이 맨 윗줄에 제공한 '현재 시간'이 절대적인 기준입니다. 현재 시간을 기준으로 모든 상황을 해석하세요.\n"
+            "12. [글로벌 검색 프로토콜]: 'search_web' 도구를 사용할 때는 반드시 검색어를 영어로 번역해서 호출하세요. 원문을 읽은 후 사용자에게 보고할 때는 한국어로 요약하세요.\n"
+            "13. [OS 환경]: 당신은 현재 Windows 환경에서 실행 중입니다. 터미널 명령어는 반드시 윈도우 CMD 기준으로 작성하세요. (예: pwd 대신 cd, ls 대신 dir 사용)\n"
+            "14. [로컬 프로젝트 지침 절대 준수]: 만약 프롬프트 하단에 '[현재 프로젝트 맞춤 지침]' 섹션이 있다면, 이를 최우선 법률로 적용하여 코드를 작성하세요.\n"
+            "15. [사고 언어 고정]: `<think>` 태그 내부를 포함한 모든 내부 추론 과정은 반드시 '한국어' 또는 '영어'로만 작성하세요.\n"
+            "16. [병렬 작업 최적화]: 복잡하고 독립적인 여러 과업을 받으면, 'delegate_parallel_task' 도구를 호출하여 동시에 실행을 위임하세요. 이후 반드시 'join_sub_agent_results'를 호출하여 결과를 통합하세요."
         )
 
     def get_tools(self):
@@ -914,10 +912,37 @@ class MOPApp(ctk.CTk):
             
             result_text = response['choices'][0]['message']['content']
             
-            # 4. JSON 파싱
-            import re, json
+            thought_process = ""
+            clean_text = result_text
+
+            # 1-1. <think> 블록 추출 및 분리
+            # (만약 AI가 </think>를 빼먹고 출력하다 끊겨도 에러 안 나도록 |$ 처리)
+            think_match = re.search(r'<think>(.*?)(?:</think>|$)', result_text, re.DOTALL | re.IGNORECASE)
+            if think_match:
+                thought_process = think_match.group(1).strip()
+                # UI용 텍스트에서는 <think> 블록 전체를 날려버립니다.
+                clean_text = re.sub(r'<think>.*?(?:</think>|$)', '', result_text, flags=re.DOTALL | re.IGNORECASE).strip()
+
             json_match = re.search(r'```(?:json)?\s*(\[.*?\]|\{.*?\})\s*```', result_text, re.DOTALL | re.IGNORECASE)
-                                   
+            display_text = re.sub(r'```(?:json)?\s*(\[.*?\]|\{.*?\})\s*```', '', clean_text, flags=re.DOTALL | re.IGNORECASE).strip()
+
+            if display_text or thought_process:
+                # 👇 lambda를 사용하여 파라미터 이름을 정확히 지정(thought=)해 줍니다.
+                self.after(0, lambda: self.append_chat(display_text, "assistant", thought=thought_process))
+
+            # 3. 도구 실행 로직 (JSON 파싱 및 라우팅)
+            if json_match:
+                json_str = json_match.group(1).strip()
+                
+                # [지능형 괄호 복구기] 열린 괄호와 닫힌 괄호의 개수를 비교하여 모자란 만큼 채워 넣음
+                open_braces = json_str.count('{')
+                close_braces = json_str.count('}')
+                
+                if open_braces > close_braces:
+                    missing_count = open_braces - close_braces
+                    json_str += '}' * missing_count
+                    self.log_debug(f"🔧 누락된 JSON 닫는 괄호 {missing_count}개를 자동 복구했습니다.")
+
             extracted_memories = []
             
             if json_match:
@@ -956,8 +981,15 @@ class MOPApp(ctk.CTk):
         import time
         self.last_user_interaction = time.time()
         if event and event.keysym == 'Return' and event.state & 0x0001: return
+
+        if getattr(self, 'is_generating', False) or getattr(self, 'is_idle_running', False) or getattr(self, 'is_sleep_running', False):
+            # 안내 메시지만 띄우고 함수를 즉시 종료시켜 뇌(LLM)로의 접근을 원천 차단합니다.
+            self.append_chat("⚠️ [시스템 경고]\n현재 MOP가 자율 작업 또는 수면 중입니다. 작업이 끝난 후 메시지를 입력해 주세요.", "system")
+            return "break"
+        
         query = self.user_input.get("1.0", "end-1c").strip()
         if not query or not self.engine.llm: return "break"
+
         
         # 👇 [신규 패치] 결재 대기 중이라면 입력을 일반 대화가 아닌 '결재 서류'로 가로챕니다!
         if getattr(self, 'is_waiting_for_approval', False):
@@ -998,6 +1030,7 @@ class MOPApp(ctk.CTk):
             
             return "break" # LLM 추론 스레드를 새로 띄우지 않고 여기서 즉시 함수 종료
 
+        
         # --- 👇 (아래는 결재 대기 중이 아닐 때 실행되는 기존 정상 로직) ---
         self.user_input.delete("1.0", "end")
         
@@ -1022,6 +1055,8 @@ class MOPApp(ctk.CTk):
             command=self.stop_ai_generation,
             state="normal"
         )
+        self.idle_mode_var = ctk.BooleanVar(value=False)
+        
 
     def set_ui_idle_state(self):
         """대기 중: 버튼을 다시 '전송'으로 복구"""
@@ -1041,12 +1076,13 @@ class MOPApp(ctk.CTk):
         self.log_debug("🛑 사용자가 정지 버튼을 눌렀습니다. 텍스트 생성을 즉시 멈춥니다.")
 
     # 1. 인자 이름을 목적에 맞게 'force_scroll'로 변경합니다.
-    def append_chat(self, text, role="ai", force_scroll=False):
-        self.after(0, self._append_chat_internal, text, force_scroll)
+    def append_chat(self, text, role="ai", thought=None, force_scroll=False):
+        # 람다(lambda)를 통해 모든 변수를 내부 함수로 안전하게 토스합니다.
+        self.after(0, lambda: self._append_chat_internal(text, role, thought, force_scroll))
 
     # 2. 스마트 스크롤의 핵심 로직 추가
-    def _append_chat_internal(self, text, force_scroll):
-        # 👇 [수정] yview()가 None을 반환하는 상황을 대비한 안전 장치 (기본값 True)
+    def _append_chat_internal(self, text, role="ai", thought=None, force_scroll=False):
+        # yview()가 None을 반환하는 상황을 대비한 안전 장치 (기본값 True)
         is_at_bottom = True 
         try:
             yview_result = self.chat_view.yview()
@@ -1057,7 +1093,54 @@ class MOPApp(ctk.CTk):
             pass  # 예외가 발생해도 앱이 뻗지 않고 자연스럽게 스크롤을 내립니다.
 
         self.chat_view.configure(state="normal")
-        self.chat_view.insert("end", text)
+        
+        # 1. 순수 대화 텍스트 삽입
+        if text:
+            self.chat_view.insert("end", text)
+        
+        # 2. 👇 [토글 UI 삽입] 사고 과정(Thought)이 있을 경우 텍스트박스 안에 버튼을 박아 넣습니다.
+        if thought:
+            import customtkinter as ctk
+            
+            # chat_view를 부모로 하는 투명 프레임 생성
+            thought_frame = ctk.CTkFrame(self.chat_view, fg_color="transparent")
+            
+            # 숨겨둘 텍스트박스 (사고 과정 내용)
+            thought_box = ctk.CTkTextbox(thought_frame, height=100, width=500, fg_color="#2B2B2B", text_color="#A0A0A0", font=("Consolas", 12))
+            thought_box.insert("0.0", thought)
+            thought_box.configure(state="disabled")
+            
+            # 토글 동작 함수
+            def toggle_thought():
+                if thought_box.winfo_ismapped():
+                    thought_box.pack_forget() # 숨기기
+                    toggle_btn.configure(text="▶ 사고 과정 보기 (Hidden)", text_color="#7A7A7A")
+                else:
+                    thought_box.pack(fill="x", pady=(5, 0)) # 보이기
+                    toggle_btn.configure(text="▼ 사고 과정 닫기", text_color="#00A2FF")
+                    self.chat_view.see("end") # 열었을 때 자동으로 스크롤 따라가기
+
+            # 토글 버튼 생성
+            toggle_btn = ctk.CTkButton(
+                thought_frame, 
+                text="▶ 사고 과정 보기 (Hidden)", 
+                width=150, height=24,
+                fg_color="transparent", hover_color="#3A3A3A", text_color="#7A7A7A",
+                command=toggle_thought
+            )
+            toggle_btn.pack(anchor="w")
+
+            # 텍스트 줄바꿈 후, CTkTextbox의 내부 tk.Text 위젯에 프레임을 '창' 형태로 박아 넣음
+            self.chat_view.insert("end", "\n")
+            try:
+                # CustomTkinter 텍스트박스의 내부 위젯(_textbox)에 직접 접근
+                self.chat_view._textbox.window_create("end", window=thought_frame)
+                self.chat_view.insert("end", "\n\n")
+            except Exception as e:
+                # 만약 내부 위젯 접근에 실패하면 텍스트로 대체 출력 (안전 장치)
+                self.log_debug(f"UI 삽입 실패, 텍스트로 대체: {e}")
+                self.chat_view.insert("end", f"[사고 과정]\n{thought}\n\n")
+
         self.chat_view.configure(state="disabled")
         
         # 강제 스크롤 요청이거나, 화면 맨 아래를 보고 있었을 때만 스크롤을 따라갑니다.
@@ -1688,14 +1771,24 @@ class MOPApp(ctk.CTk):
                         elif tc_name == "run_shell_command":
                             cmd = args_dict.get("command", "")
                             
-                            # 👇 [강력한 패치] 명령어 중간에 있는 python이나 pip를 추적하여 완벽하게 가상환경으로 납치합니다.
-                            # 단어 단위(\b)로 정확히 python이나 pip일 때만 가상환경 경로로 치환
-                            cmd = re.sub(r'\bpython\b', f'"{sys.executable}"', cmd)
-                            # pip는 가상환경 파이썬을 이용한 모듈 실행(-m pip) 방식으로 안전하게 치환
-                            cmd = re.sub(r'\bpip\b', f'"{sys.executable}" -m pip', cmd)
+                            # 👇 [완벽 패치] lambda를 사용하여 윈도우 경로(\U, \a 등)가 이스케이프 문자로 오작동하는 것을 원천 차단!
+                            cmd = re.sub(r'\bpython\b', lambda _: f'"{sys.executable}"', cmd)
+                            cmd = re.sub(r'\bpip\b', lambda _: f'"{sys.executable}" -m pip', cmd)
                             
-                            self.log_debug(f"💻 쉘 명령어 가상환경 매핑 완료: {cmd}")
-                            tool_result = self.engine.execute_skill_safely(["cmd", "/c", cmd])
+                            forbidden_packages = ["llama-cpp-python", "torch", "customtkinter"]
+                            if "pip " in cmd and any(pkg in cmd for pkg in forbidden_packages):
+                                self.log_debug(f"🛡️ 코어 패키지 재설치 시도 차단: {cmd}")
+                                tool_result = (
+                                    "🚨 [시스템 강제 차단]\n"
+                                    "AI 코어 엔진(llama-cpp-python, torch 등)을 업데이트하거나 재설치하려는 시도가 감지되어 차단되었습니다.\n"
+                                    "이 패키지들은 이미 시스템에 완벽하게 설치되어 구동 중입니다. 다른 접근 방식을 찾아보세요."
+                                )
+                            else:
+                                self.log_debug(f"💻 쉘 명령어 가상환경 매핑 완료: {cmd}")
+                                
+                                # 👇 [신규 패치] 윈도우 CMD의 따옴표 증발 버그를 막기 위해 전체를 한 번 더 감싸줍니다.
+                                safe_cmd = f'"{cmd}"'
+                                tool_result = self.engine.execute_skill_safely(["cmd", "/c", safe_cmd])
 
                         elif tc_name == "save_long_term_memory":
                             mem_text = args_dict.get("text", "")
@@ -1739,10 +1832,18 @@ class MOPApp(ctk.CTk):
                         elif tc_name == "start_background_task": 
                             cmd = args_dict.get("command", "")
                             
-                            cmd = re.sub(r'\bpython\b', f'"{sys.executable}"', cmd)
-                            cmd = re.sub(r'\bpip\b', f'"{sys.executable}" -m pip', cmd)
+                            # 👇 [여기도 동일하게 패치]
+                            cmd = re.sub(r'\bpython\b', lambda _: f'"{sys.executable}"', cmd)
+                            cmd = re.sub(r'\bpip\b', lambda _: f'"{sys.executable}" -m pip', cmd)
                             
-                            tool_result = self.engine.start_background_task(cmd)
+                            forbidden_packages = ["llama-cpp-python", "torch", "customtkinter"]
+                            if "pip " in cmd and any(pkg in cmd for pkg in forbidden_packages):
+                                self.log_debug(f"🛡️ 백그라운드 코어 패키지 재설치 시도 차단: {cmd}")
+                                tool_result = "🚨 [시스템 강제 차단] AI 코어 엔진 재설치/업데이트는 금지되어 있습니다."
+                            else:
+                                # 👇 [백그라운드 도구도 동일하게 패치]
+                                safe_cmd = f'"{cmd}"'
+                                tool_result = self.engine.start_background_task(safe_cmd)
 
                         elif tc_name == "check_task_status": 
                             tool_result = self.engine.check_task_status(args_dict.get("task_id", ""))
@@ -2051,12 +2152,16 @@ class MOPApp(ctk.CTk):
 
         if getattr(self, 'is_idle_running', False):
             self.sleep_btn.configure(state="disabled", text="🌙 성장 중 (잠들 수 없음)", fg_color="#2B2B2B")
+            self.user_input.configure(state="disabled")
         elif getattr(self, 'is_generating', False):
             self.sleep_btn.configure(state="disabled", text="🌙 작업 중...", fg_color="#2B2B2B")
+            self.user_input.configure(state="disabled")
         elif getattr(self, 'is_sleep_running', False):
             self.sleep_btn.configure(state="disabled", text="🌙 수면 중...", fg_color="#2B2B2B")
+            self.user_input.configure(state="disabled")
         else:
             self.sleep_btn.configure(state="normal", text="🌙 최적화 진행(Deep Sleep)", fg_color="#5E35B1")
+            self.user_input.configure(state="normal")
 
         status_texts = []
         
