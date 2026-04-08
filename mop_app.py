@@ -416,7 +416,7 @@ class MOPEngine:
             "2. [단일 호출 원칙]: 한 번의 응답(Turn)에서는 오직 하나의 도구만 호출하세요. 여러 도구를 동시에 출력하지 마세요.\n"
             "3. [다중 작업 및 종료 조건]: 완료되지 않은 작업이 있다면 계속해서 다음 도구를 호출하세요. 단, 사용자의 지시가 모두 완수되었다면 절대 불필요한 도구를 반복 호출하지 마세요. 작업이 완전히 끝나면 오직 자연어 텍스트로만 최종 결과를 보고하여 루프를 종료하세요.\n"
             "4. [자가 디버깅 루틴]: 에러가 발생하면 절대 포기하거나 사용자에게 변명하지 말고, 디버그 내용을 기반으로 코드를 수정하여 즉시 재호출하세요.\n"
-            "5. [환경 파악]: 코드를 짜기 전에 'run_shell_command'로 환경을 먼저 확인하는 습관을 들이세요.\n"
+            "5. [환경 파악 원칙]: 작업 전 코드를 점검할 때는 터미널(CMD)로 디렉토리를 뒤지지 말고, 즉시 'view_file'이나 'search_text' 도구를 사용하여 코드 내용 자체를 파악하세요.\n"
             "6. [누적형 코딩 프로토콜]: 길이가 긴 파이썬 코드를 작성해야 할 경우, 토큰 제한 방지를 위해 'append_to_file' 도구로 파일을 여러 번에 걸쳐 나누어 누적해 나가세요. 작성이 끝나면 터미널 도구로 실행하여 검증하세요.\n"
             "7. [단계별 패치 전략]: 에러가 발생하면 전체 파일을 다시 처음부터 쓰지 마세요. 실패한 단계만 파악하고 'edit_file'을 사용하여 해당 부분만 패치하세요.\n"
             "8. [사고 과정 필수화]: 작업을 시작하거나 도구를 호출하기 전, 반드시 `<think> ... </think>` 태그 블록을 열어 상황을 분석하고 앞으로의 계획과 체크리스트를 작성하세요.\n"
@@ -440,8 +440,8 @@ class MOPEngine:
             {"type": "function", "function": {"name": "manage_packages", "description": "패키지 관리(action, package_name)", "parameters": {"type": "object", "properties": {"action": {"type": "string"}, "package_name": {"type": "string"}}, "required": ["action"]}}},
             {"type": "function", "function": {"name": "control_mouse", "description": "마우스 제어(action: move/click, x, y)", "parameters": {"type": "object", "properties": {"action": {"type": "string"}, "x": {"type": "integer"}, "y": {"type": "integer"}}, "required": ["action"]}}},
             {"type": "function", "function": {"name": "control_keyboard", "description": "키보드 타이핑/단축키(action: type/press/hotkey, text, key)", "parameters": {"type": "object", "properties": {"action": {"type": "string"}, "text": {"type": "string"}, "key": {"type": "string"}}, "required": ["action"]}}},
-            {"type": "function", "function": {"name": "run_shell_command", "description": "터미널 명령어 실행(command)", "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}},
-            {"type": "function", "function": {"name": "view_file", "description": "파일 읽기(file_path)", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}}, "required": ["file_path"]}}},
+            {"type": "function", "function": {"name": "run_shell_command", "description": "터미널 명령어 실행(command)", "parameters": {"type": "function", "function": {"name": "run_shell_command", "description": "순수 Windows CMD 명령어만 실행합니다. (주의: PowerShell 명령어 절대 금지. 디렉토리 이동(cd)은 유지되지 않으므로 필요시 절대 경로를 사용하세요)", "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}}}},
+            {"type": "function", "function": {"name": "view_file", "description": "파일 읽기(file_path)", "parameters": {"type": "function", "function": {"name": "view_file", "description": "파일의 내용을 읽어옵니다. 파일이 존재하지 않더라도 시스템이 알아서 '파일을 찾을 수 없음' 오류 텍스트를 안전하게 반환해 주므로, 사전 검사(dir 등) 없이 안심하고 즉시 이 도구를 호출하세요.", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}}, "required": ["file_path"]}}}}},
             {"type": "function", "function": {"name": "find_files", "description": "파일 찾기(extension)", "parameters": {"type": "object", "properties": {"extension": {"type": "string"}}, "required": ["extension"]}}},
             {"type": "function", "function": {"name": "search_text", "description": "내용 검색(search_text, file_path)", "parameters": {"type": "object", "properties": {"search_text": {"type": "string"}, "file_path": {"type": "string"}}, "required": ["search_text"]}}},
             {
@@ -2270,11 +2270,12 @@ class MOPApp(ctk.CTk):
                             enforced_result = (
                                 f"🚨 [작업 {current_step_count + 1}단계 도구 실행 실패 - 에러 발생! (현재 {consecutive_error_count}회/최대 {safe_max_retry}회)]\n{tool_result}\n\n"
                                 "---[증분 복구 및 시스템 디버그 긴급 지시]---\n"
-                                "1. (반복 절대 금지): 방금 쓴 명령어(CMD/PowerShell)나 코드를 괄호 하나, 따옴표 하나만 바꿔서 다시 제출하는 바보 같은 짓을 하지 마세요. 접근 방식 자체가 틀린 것입니다.\n"
-                                "2. (도구 교체): 쉘 명령어가 계속 실패하면 즉시 파이썬(run_python_snippet)으로 우회하거나, 다른 도구를 선택하세요.\n"
-                                "3. (상태 점검): 필요시 'run_shell_command'나 'view_file'로 현재 누적된 파일 상태를 먼저 확인하세요.\n"
-                                "4. (검색 강제): 원인을 모르면 즉시 'search_web'으로 구글링하세요.\n"
-                                "5. 수정된 코드 조각만 다시 제출하여 작업을 이어가세요. 변명하지 마세요."
+                                # 👇 [수정] PowerShell 단어 삭제 및 '전혀 다른 방식' 강조
+                                "1. (반복 절대 금지): 방금 쓴 CMD 명령어나 코드를 괄호 하나, 따옴표 하나만 바꿔서 다시 제출하는 바보 같은 짓을 하지 마세요. 접근 방식 자체가 완전히 틀린 것입니다.\n"
+                                "2. (도구 우회): CMD 명령어가 계속 실패하면 즉시 파이썬(run_python_snippet) 스크립트를 작성하여 우회하거나, 다른 도구를 선택하세요.\n"
+                                "3. (상태 점검): 필요시 'view_file'로 현재 코드가 어떻게 꼬였는지 눈으로 먼저 확인하세요.\n"
+                                "4. (검색 강제): 원인을 모르면 뇌피셜로 찍지 말고 즉시 'search_web'으로 구글링하세요.\n"
+                                "5. 에러를 핑계로 작업을 멈추지 말고, 수정된 코드를 다시 제출하여 끝까지 완수하세요."
                             )
                     # 👇 [수정] 성공 시에도 AI에게 다음 단계를 독촉하는 문구를 강화합니다.
                     else:
