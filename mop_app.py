@@ -26,14 +26,67 @@ except ImportError:
     print("오류: llama-cpp-python 라이브러리가 설치되어 있지 않습니다.")
     import sys; sys.exit(1)
 
+
+def get_resource_path(relative_path: str) -> str:
+    relative_path = relative_path.replace("/", os.sep).replace("\\", os.sep)
+    if getattr(sys, "frozen", False):
+        base_path = getattr(sys, "_MEIPASS")
+    else:
+        base_path = os.path.abspath(os.path.dirname(__file__))
+    return os.path.join(base_path, relative_path)
+
+
+def get_local_path(relative_path: str) -> str:
+    relative_path = relative_path.replace("/", os.sep).replace("\\", os.sep)
+    return os.path.abspath(os.path.join(os.getcwd(), relative_path))
+
+
+def resolve_path(relative_path: str) -> str:
+    local_path = get_local_path(relative_path)
+    if os.path.exists(local_path):
+        return local_path
+    if getattr(sys, "frozen", False):
+        bundled_path = get_resource_path(relative_path)
+        if os.path.exists(bundled_path):
+            return bundled_path
+    return local_path
+
+
 # --- [기본 테마 설정] ---
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
+class LoadingWindow(ctk.CTkToplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("MOP 로딩 중...")
+        self.geometry("420x180")
+        self.resizable(False, False)
+        self.label = ctk.CTkLabel(self, text="구성요소 초기화 중...", anchor="center")
+        self.label.pack(pady=20)
+        self.progress = ctk.CTkProgressBar(self, width=360)
+        self.progress.pack(pady=10)
+        self.progress.set(0.0)
+        self.center_window()
+        self.attributes("-topmost", True)
+
+    def center_window(self):
+        self.update_idletasks()
+        width = self.winfo_width()
+        height = self.winfo_height()
+        x = (self.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.winfo_screenheight() // 2) - (height // 2)
+        self.geometry(f"{width}x{height}+{x}+{y}")
+
+    def update_progress(self, value: float, text: str):
+        self.progress.set(value)
+        self.label.configure(text=text)
+        self.update()
+
 # --- [1. MOP AI 엔진 클래스 (핵심 로직 & 도구 모음)] ---
 class MOPEngine:
-    def __init__(self, db_path="./res/skills/chat_history.db"):
-        self.db_path = db_path
+    def __init__(self, db_path=None):
+        self.db_path = db_path if db_path else get_local_path("res/skills/chat_history.db")
         self.llm = None
         self.messages = []
         # 👇 [추가] 백그라운드 작업들을 관리할 저장소와 카운터
@@ -58,7 +111,7 @@ class MOPEngine:
 
     def migrate_old_memory(self):
         """구형 .agent_memory 파일을 읽어 Vector DB로 이전하고 백업합니다."""
-        old_mem_path = "./res/skills/.agent_memory"
+        old_mem_path = get_local_path("res/skills/.agent_memory")
         if os.path.exists(old_mem_path):
             print("🔄 구형 메모리 파일(.agent_memory)을 Vector DB로 마이그레이션 합니다...")
             try:
@@ -306,7 +359,7 @@ class MOPEngine:
         
         # 👇 [신규 추가] 저장된 자가 원칙을 읽어옵니다.
         principles_str = ""
-        principles_path = "res/self_principles.json"
+        principles_path = resolve_path("res/self_principles.json")
         if os.path.exists(principles_path):
             try:
                 with open(principles_path, "r", encoding="utf-8") as f:
@@ -542,7 +595,7 @@ class MOPEngine:
         ]
     
         import os, json
-        registry_path = "res/custom_tools.json"
+        registry_path = resolve_path("res/custom_tools.json")
         if os.path.exists(registry_path):
             try:
                 with open(registry_path, "r", encoding="utf-8") as f:
@@ -605,9 +658,8 @@ class MOPApp(ctk.CTk):
         self.current_approval_dialog = None
 
         #Idle Loop 관련 변수
-        import time # (파일 맨 위에 없다면 추가)
-        
-        
+        import time
+
         self.idle_mode_var = ctk.BooleanVar(value=False) # 기본은 꺼둠 (테스트할 때 켭니다)
         self.last_user_interaction = time.time()
         self.is_generating = False # 현재 AI가 작동 중인지 확인하는 플래그
@@ -618,11 +670,19 @@ class MOPApp(ctk.CTk):
         self.after(1000, self.update_status_indicator)
         self.after(10000, self.idle_monitor_loop)
 
+        # 로딩 창을 먼저 생성하고 진행 상태를 보여줍니다.
+        self.loading_window = LoadingWindow(self)
+        self.loading_window.update_progress(0.2, "UI 생성 중...")
+
         # 👇 [순서 변경] 반드시 UI(사이드바, 메인)를 먼저 그리고 나서 세팅을 불러와야 합니다!
         self.create_sidebar()
         self.create_main_area()
-        
+        self.loading_window.update_progress(0.6, "UI 생성 완료")
+
+        self.loading_window.update_progress(0.8, "설정 로드 중...")
         self.load_settings()
+        self.loading_window.update_progress(0.95, "설정 로드 완료")
+        self.loading_window.destroy()
 
         
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -1269,7 +1329,7 @@ class MOPApp(ctk.CTk):
 
     def load_settings(self):
         """앱 시작 시 config.json 파일에서 설정값을 불러옵니다."""
-        config_path = "./res/skills/mop_config.json"
+        config_path = resolve_path("res/skills/mop_config.json")
         if os.path.exists(config_path):
             try:
                 with open(config_path, "r", encoding="utf-8") as f:
@@ -1309,7 +1369,7 @@ class MOPApp(ctk.CTk):
 
     def save_settings(self):
         """앱 종료 시 현재 UI 설정값과 프롬프트를 config.json 파일에 저장합니다."""
-        config_path = "./res/skills/mop_config.json"
+        config_path = get_local_path("res/skills/mop_config.json")
         config = {
             "model_path": self.full_model_path,  # 👈 [수정] model_path_var.get() 대신 절대 경로 저장
             "kv_quant": self.kv_quant_var.get(),
@@ -1905,26 +1965,28 @@ class MOPApp(ctk.CTk):
                                 tool_result = "🔍 [과거 기억 회상 결과]\n" + "\n".join([f"- {res}" for res in results])
                             else:
                                 tool_result = "관련된 과거 기억이 없습니다. 'search_web'으로 구글링을 시도하세요."
-                        # 1. 파일 보기 (View)
                         elif tc_name == "view_file":
+                            file_tools_path = resolve_path("res/skills/file_tools.py")
                             tool_result = self.engine.execute_skill_safely([
-                                sys.executable, "./res/skills/file_tools.py", 
+                                sys.executable, file_tools_path,
                                 "--action", "view", 
                                 "--path", args_dict.get("file_path", "")
                             ])
                         
                         # 2. 파일 찾기 (Find) - 인자 명칭 동기화
                         elif tc_name == "find_files":
+                            file_tools_path = resolve_path("res/skills/file_tools.py")
                             tool_result = self.engine.execute_skill_safely([
-                                sys.executable, "./res/skills/file_tools.py", 
+                                sys.executable, file_tools_path,
                                 "--action", "find", 
                                 "--pattern", args_dict.get("extension", "") # --pattern으로 전달
                             ])
                         
                         # 3. 텍스트 검색 (Search) - 인자 명칭 동기화
                         elif tc_name == "search_text":
+                            file_tools_path = resolve_path("res/skills/file_tools.py")
                             tool_result = self.engine.execute_skill_safely([
-                                sys.executable, "./res/skills/file_tools.py", 
+                                sys.executable, file_tools_path,
                                 "--action", "search", 
                                 "--query", args_dict.get("search_text", ""), # --query로 전달
                                 "--path", args_dict.get("file_path", ".")
@@ -1932,13 +1994,14 @@ class MOPApp(ctk.CTk):
 
                         # 4. 파일 수정 (Edit) - 외부 스크립트 호출 방식으로 변경
                         elif tc_name == "edit_file":
+                            file_tools_path = resolve_path("res/skills/file_tools.py")
                             f_path = args_dict.get("file_path", "")
                             s_str = args_dict.get("search_string", "")
                             r_str = args_dict.get("replace_string", "")
                             
                             # 스크립트 호출 실행
                             tool_result = self.engine.execute_skill_safely([
-                                sys.executable, "./res/skills/file_tools.py",
+                                sys.executable, file_tools_path,
                                 "--action", "edit",
                                 "--path", f_path,
                                 "--old_text", s_str,
@@ -2026,9 +2089,11 @@ class MOPApp(ctk.CTk):
                             new_principles = new_principles[:4]
                             
                             try:
-                                with open("res/self_principles.json", "w", encoding="utf-8") as f:
+                                principles_path = get_local_path("res/self_principles.json")
+                                os.makedirs(os.path.dirname(principles_path), exist_ok=True)
+                                with open(principles_path, "w", encoding="utf-8") as f:
                                     json.dump(new_principles, f, ensure_ascii=False, indent=4)
-                                
+
                                 tool_result = f"✅ 성공: 시스템의 자가 원칙이 {len(new_principles)}개로 업데이트 및 각인되었습니다."
                                 self.log_debug(f"🧬 자가 원칙 진화 완료: {new_principles}")
                             except Exception as e:
@@ -2042,14 +2107,15 @@ class MOPApp(ctk.CTk):
                             t_params = args_dict.get("parameters_schema", {})
                             
                             # 1. 파이썬 실행 파일 생성
-                            os.makedirs("res/skills", exist_ok=True)
-                            py_path = os.path.join("res", "skills", f"{t_name}.py")
+                            py_path = get_local_path(os.path.join("res", "skills", f"{t_name}.py"))
+                            os.makedirs(os.path.dirname(py_path), exist_ok=True)
                             try:
                                 with open(py_path, "w", encoding="utf-8") as f:
                                     f.write(t_code)
                                     
                                 # 2. 커스텀 도구 레지스트리(JSON) 업데이트
-                                registry_path = "res/custom_tools.json"
+                                registry_path = get_local_path("res/custom_tools.json")
+                                os.makedirs(os.path.dirname(registry_path), exist_ok=True)
                                 custom_tools = []
                                 
                                 # 기존 도구가 있으면 먼저 '읽어옵니다' (r 모드)
@@ -2091,7 +2157,7 @@ class MOPApp(ctk.CTk):
                                 tool_result = f"오류: 도구 생성 실패 - {e}"
                         else: 
                             # 👇 [신규 패치] 기본 도구가 아니라면, 내가 만든 커스텀 도구인지 레지스트리 확인!
-                            registry_path = "res/custom_tools.json"
+                            registry_path = get_local_path("res/custom_tools.json")
                             is_custom_tool = False
                             if os.path.exists(registry_path):
                                 with open(registry_path, "r", encoding="utf-8") as f:
@@ -2100,7 +2166,7 @@ class MOPApp(ctk.CTk):
                                         is_custom_tool = True
                                         
                             if is_custom_tool:
-                                py_path = os.path.join("res", "skills", f"{tc_name}.py")
+                                py_path = get_local_path(os.path.join("res", "skills", f"{tc_name}.py"))
                                 if os.path.exists(py_path):
                                     # 👇 [핵심 패치] 여기서도 "python" 대신 sys.executable 사용
                                     cli_args = [sys.executable, py_path]
