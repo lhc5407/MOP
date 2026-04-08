@@ -171,7 +171,8 @@ class MOPEngine:
                 print(f"⚠️ 구형 메모리 마이그레이션 실패: {e}")
 
     def archive_to_sqlite(self, role, content):
-        conn = sqlite3.connect(self.db_path)
+        # 👇 [핵심 패치 3] timeout=10.0을 추가하여 병렬 DB 접근 에러 방지
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
         cur = conn.cursor()
         cur.execute("INSERT INTO history (role, content, timestamp) VALUES (?, ?, ?)",
                     (role, content, datetime.datetime.now()))
@@ -179,7 +180,8 @@ class MOPEngine:
         conn.close()
 
     def fetch_from_sqlite(self, count=10):
-        conn = sqlite3.connect(self.db_path)
+        # 👇 [핵심 패치 3] timeout=10.0을 추가하여 병렬 DB 접근 에러 방지
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
         cur = conn.cursor()
         cur.execute("SELECT role, content FROM history ORDER BY id DESC LIMIT ?", (count,))
         rows = cur.fetchall()
@@ -187,7 +189,8 @@ class MOPEngine:
         return [{"role": r, "content": c} for r, c in reversed(rows)]
 
     def search_history_db(self, keyword: str, limit: int = 5) -> str:
-        conn = sqlite3.connect(self.db_path)
+        # 👇 [핵심 패치 3] timeout=10.0을 추가하여 병렬 DB 접근 에러 방지
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
         cur = conn.cursor()
         cur.execute("SELECT role, content, timestamp FROM history WHERE content LIKE ? ORDER BY timestamp DESC LIMIT ?", (f"%{keyword}%", limit))
         rows = cur.fetchall()
@@ -429,7 +432,8 @@ class MOPEngine:
             "15. [사고 언어 고정]: `<think>` 태그 내부를 포함한 모든 내부 추론 과정은 반드시 '한국어' 또는 '영어'로만 작성하세요.\n"
             "16. [병렬 작업 최적화]: 복잡하고 독립적인 여러 과업을 받으면, 'delegate_parallel_task' 도구를 호출하여 동시에 실행을 위임하세요. 이후 반드시 'join_sub_agent_results'를 호출하여 결과를 통합하세요.\n"
             "17. [경로 작성 규칙]: Windows 환경이더라도 파일 경로를 작성할 때는 반드시 역슬래시(\\) 대신 슬래시(/)를 사용하세요. (예: C:/Users/Public/Desktop/...) 역슬래시는 JSON 파싱 에러를 유발합니다.\n"
-            "18. [파일 읽기 강제 원칙]: 특정 파일의 코드를 분석할 때, 'run_shell_command'나 'run_python_snippet'으로 파일 존재 여부를 먼저 확인하는 것은 **절대 금지**입니다. 묻지도 따지지도 말고 즉시 'view_file' 도구에 경로를 넣어 호출하세요."
+            "18. [파일 읽기 강제 원칙]: 특정 파일의 코드를 분석할 때, 'run_shell_command'나 'run_python_snippet'으로 파일 존재 여부를 먼저 확인하는 것은 **절대 금지**입니다. 묻지도 따지지도 말고 즉시 'view_file' 도구에 경로를 넣어 호출하세요.\n"
+            "19. [파라미터 엄격 준수]: 도구를 호출할 때는 반드시 제공된 JSON 스키마에 정의된 파라미터 이름(예: text, query 등)만 정확히 사용하세요. 'category', 'tags' 등 스키마에 없는 파라미터를 임의로 지어내면 치명적인 오류가 발생합니다."
         )
 
     def get_tools(self):
@@ -1655,7 +1659,9 @@ class MOPApp(ctk.CTk):
                 auto_approve_this_turn = True
                 self.log_debug("🌱 자율 진화 모드: 모든 행동이 자동 승인됩니다.")
 
-            self.engine.archive_to_sqlite("user", query)
+            # 👇 [수정] 자율 모드일 때는 거대한 트리거 프롬프트를 DB에 저장하지 않습니다!
+            if not getattr(self, 'is_idle_running', False):
+                self.engine.archive_to_sqlite("user", query)
             
             # 👇 [추가] Plan Mode가 켜져 있으면 에이전트에게 사전 경고를 줍니다.
             plan_warning = ""
@@ -1709,14 +1715,16 @@ class MOPApp(ctk.CTk):
             # 👇 [수정] 위에서 수집한 6가지 메모리 구조(기본 + 유저 지침 + 안전 경고 + 로컬 지침 + 학습 원칙 + 무의식 기억)를 완벽하게 융합!
             combined_prompt = f"{static_rules}\n\n[사용자 지정 페르소나 및 지침]\n{self.user_instruction}{plan_warning}{local_rules_text}{learned_text}{rag_text}"
             
-            if not self.engine.messages:
-                self.engine.messages.append({"role": "system", "content": combined_prompt})
-            else:
-                # 이미 대화 중이라도 시스템 프롬프트는 최신화된 병합본으로 유지
-                self.engine.messages[0]["content"] = combined_prompt
-                
-            # AI의 메모리(문맥)에 사용자의 실제 명령 추가
-            self.engine.messages.append({"role": "user", "content": query})
+            # 👇 [자물쇠 1] 초기 메시지를 세팅할 때 짧게 잠급니다.
+            with self.memory_lock:
+                if not self.engine.messages:
+                    self.engine.messages.append({"role": "system", "content": combined_prompt})
+                else:
+                    # 이미 대화 중이라도 시스템 프롬프트는 최신화된 병합본으로 유지
+                    self.engine.messages[0]["content"] = combined_prompt
+                    
+                # AI의 메모리(문맥)에 사용자의 실제 명령 추가
+                self.engine.messages.append({"role": "user", "content": query})
             
             consecutive_error_count = 0
             
@@ -1725,38 +1733,34 @@ class MOPApp(ctk.CTk):
 
             self._current_task_auto_searched = False
             
-            while True:
-                # 1. 동적 문맥 압축기 (UI 설정값 연동)
-                ctx_len = sum(len(str(m.get('content', ''))) for m in self.engine.messages)
+            while True: # (메인 에이전트 루프)
                 
-                # 1. 동적 문맥 압축기 (UI 설정값 연동 및 연속 압축 적용)
-                safe_mem_turns = self.get_safe_int(self.mem_turns_var, 20)
-                safe_mem_chars = self.get_safe_int(self.mem_chars_var, 12000)
-                
-                # 👇 [핵심 패치] if 대신 while을 사용하여 안전권에 들어올 때까지 과거 기억을 계속 압축
-                while True:
-                    ctx_len = sum(len(str(m.get('content', ''))) for m in self.engine.messages)
+                # 👇 [자물쇠 2] 압축을 진행하는 동안만 잠그고, 압축이 끝나면 바로 풀어줍니다!
+                with self.memory_lock:
+                    safe_mem_turns = self.get_safe_int(self.mem_turns_var, 20)
+                    safe_mem_chars = self.get_safe_int(self.mem_chars_var, 12000)
                     
-                    # 안전한 용량(턴 수 & 글자 수)이거나, 메시지가 시스템 프롬프트+현재질문(2개)뿐이면 압축 종료
-                    if (len(self.engine.messages) <= safe_mem_turns and ctx_len <= safe_mem_chars) or len(self.engine.messages) <= 2:
-                        break
+                    while True:
+                        ctx_len = sum(len(str(m.get('content', ''))) for m in self.engine.messages)
                         
-                    self.log_debug(f"🧹 메모리 연속 압축 중... (현재: {len(self.engine.messages)}턴, {ctx_len}자)")
-                    
-                    end_idx = 2
-                    # 다음 사용자(user) 메시지를 찾을 때까지 인덱스 전진
-                    while end_idx < len(self.engine.messages) and self.engine.messages[end_idx].get('role') != 'user':
-                        end_idx += 1
+                        if (len(self.engine.messages) <= safe_mem_turns and ctx_len <= safe_mem_chars) or len(self.engine.messages) <= 2:
+                            break
+                            
+                        self.log_debug(f"🧹 메모리 연속 압축 중... (현재: {len(self.engine.messages)}턴, {ctx_len}자)")
                         
-                    if end_idx < len(self.engine.messages):
-                        for msg in self.engine.messages[1:end_idx]:
-                            if msg.get('role') in ['user', 'assistant'] and msg.get('content'):
-                                self.engine.archive_to_sqlite(msg['role'], msg['content'])
-                        # 시스템 프롬프트(0) + 다음 대화 블록(end_idx 이후)으로 갱신
-                        self.engine.messages = [self.engine.messages[0]] + self.engine.messages[end_idx:]
-                    else:
-                        break # 더 이상 자를 기준이 없으면 강제 탈출
-
+                        end_idx = 2
+                        while end_idx < len(self.engine.messages) and self.engine.messages[end_idx].get('role') != 'user':
+                            end_idx += 1
+                            
+                        if end_idx < len(self.engine.messages):
+                            for msg in self.engine.messages[1:end_idx]:
+                                if msg.get('role') in ['user', 'assistant'] and msg.get('content'):
+                                    self.engine.archive_to_sqlite(msg['role'], msg['content'])
+                            self.engine.messages = [self.engine.messages[0]] + self.engine.messages[end_idx:]
+                        else:
+                            break
+                            
+                # 자물쇠가 풀린 상태로 평화롭게 AI가 답변을 생성하기 시작합니다.
                 self.append_chat("\n🤖 AI: ", "ai")
                 
                 # 2. LLM 스트리밍 (UI Temperature 및 Max Tokens 연동)
@@ -1875,19 +1879,18 @@ class MOPApp(ctk.CTk):
                                     tc_args = json.dumps({"error_detail": str(e)})
                                     
                     else:
-                            # 👇 [완벽 방어 패치]
                             # 1. result_text가 아니라 기존에 쓰시던 assistant_content를 사용합니다.
-                            # 2. display_text가 선언되지 않았더라도 Pylance 에러가 나지 않도록 안전하게 가져옵니다.
                             safe_display = locals().get('display_text', '')
                             final_ai_text = safe_display if safe_display else assistant_content
                             
-                            # 1. MOP의 뇌(단기 기억 및 해마 로직)에 AI의 최종 답변을 각인시킵니다.
+                            # 2. MOP의 뇌(단기 기억 및 해마 로직)에 AI의 최종 답변을 각인시킵니다.
                             self.update_history("assistant", final_ai_text)
-                            
-                            # 2. 파일 DB(SQLite)에 백업
                             self.engine.archive_to_sqlite("assistant", final_ai_text.strip())
                             
                             self.log_debug("✅ 턴 종료: AI의 최종 응답이 단기 기억에 저장되었습니다.")
+                            
+                            # 👇 [핵심 패치] 루프를 부수기 직전에 성공 플래그를 꽂아야 사후 회고(학습)가 가동됩니다!
+                            task_completed_successfully = True
                             
                             # 3. [매우 중요] 루프를 강제로 탈출하여 AI 스레드를 평화롭게 종료시킵니다.
                             break
@@ -1997,7 +2000,8 @@ class MOPApp(ctk.CTk):
                                 mem_id = self.engine.vdb.add_memory(mem_text)
                                 tool_result = f"✅ 성공: 해당 지식이 장기 기억(Vector DB)에 영구 저장되었습니다. (ID: {mem_id})"
                             else:
-                                tool_result = "오류: 저장할 텍스트가 없습니다."
+                                # 👇 [수정] AI가 무엇을 실수했는지 정확히 짚어주는 에러 메시지로 변경
+                                tool_result = "❌ 오류: 'text' 파라미터가 누락되었습니다. 당신이 'content', 'category' 등 임의의 파라미터를 지어내지 않았는지 확인하고, 반드시 {'text': '기억할 내용'} 구조로 다시 호출하세요."
                                 
                         elif tc_name == "search_long_term_memory":
                             query_text = args_dict.get("query", "")
@@ -2126,8 +2130,8 @@ class MOPApp(ctk.CTk):
                             if not isinstance(new_principles, list):
                                 new_principles = [str(new_principles)]
                                 
-                            # 👇 [핵심 방어막] 최대 4개까지만 허용하고 나머지는 날립니다.
-                            new_principles = new_principles[:4]
+                            # 👇 [핵심 방어막] 최대 10개까지만 허용하고 나머지는 날립니다.
+                            new_principles = new_principles[:10]
                             
                             try:
                                 principles_path = get_local_path("res/self_principles.json")
@@ -2299,8 +2303,6 @@ class MOPApp(ctk.CTk):
                     })
                     continue
                 
-                task_completed_successfully = True # 루프를 정상적으로 빠져나오면 성공으로 간주
-                break
 
             # 👇 [추가] 루프 종료 후 성공했다면 사후 회고 실행
             if task_completed_successfully and consecutive_error_count == 0 and not self.stop_generation_flag:
