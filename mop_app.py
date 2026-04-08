@@ -14,17 +14,28 @@ import traceback
 import threading
 import time
 
-# 👇 [패치] PyInstaller Windowed 모드에서 sys.stdout/stderr가 None이 되어 isatty() 호출 시 발생하는 크래시 방지
+# 👇 [패치] PyInstaller Windowed 모드에서 sys.stdout/stderr가 None이 되어 isatty() 호출 시 발생하는 크래시 방지 및 이모지(UTF-8) 출력 시 cp949 인코딩 에러 방지
 class DummyOutput:
+    encoding = 'utf-8'
     def write(self, *args, **kwargs): pass
     def flush(self, *args, **kwargs): pass
     def isatty(self): return False
 
 if sys.stdout is None:
     sys.stdout = DummyOutput()
+else:
+    try:
+        sys.stdout.reconfigure(encoding='utf-8') # type: ignore
+    except Exception:
+        pass
 
 if sys.stderr is None:
     sys.stderr = DummyOutput()
+else:
+    try:
+        sys.stderr.reconfigure(encoding='utf-8') # type: ignore
+    except Exception:
+        pass
 
 import llama_cpp
 from llama_cpp import Llama
