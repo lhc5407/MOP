@@ -13,6 +13,8 @@ import sys
 import traceback
 import threading
 import time
+import llama_cpp
+from llama_cpp import Llama
 from typing import List, Dict, Any, cast, Iterator
 from ddgs import DDGS
 from mop_memory import VectorMemoryManager
@@ -523,14 +525,14 @@ class MOPEngine:
                 "type": "function",
                 "function": {
                     "name": "update_self_principles",
-                    "description": "시스템의 근본적인 행동 원칙(최대 4개)을 업데이트합니다. 자율 성장 중 깨달은 중요한 메타 규칙을 저장하세요. 이 원칙은 시스템 프롬프트에 영구적으로 각인됩니다.",
+                    "description": "시스템의 근본적인 행동 원칙(최대 10개)을 업데이트합니다. 자율 성장 중 깨달은 중요한 메타 규칙을 저장하세요. 이 원칙은 시스템 프롬프트에 영구적으로 각인됩니다.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "principles": {
                                 "type": "array",
                                 "items": {"type": "string"},
-                                "description": "최대 4개의 원칙 문자열 배열. (예: ['항상 코드를 짤 때 예외 처리를 우선한다', '사용자의 개입을 최소화한다']) 기존 원칙을 완전히 덮어씁니다."
+                                "description": "최대 10개의 원칙 문자열 배열. (예: ['항상 코드를 짤 때 예외 처리를 우선한다', '사용자의 개입을 최소화한다']) 기존 원칙을 완전히 덮어씁니다."
                             }
                         },
                         "required": ["principles"]
@@ -558,6 +560,9 @@ class MOPApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.engine = MOPEngine()
+
+        self.memory_lock = threading.Lock()
+        self.ui_widgets_trashbin = []
         
         # 창 설정
         self.title("MOP - Full Custom Agent Dashboard")
@@ -996,7 +1001,12 @@ class MOPApp(ctk.CTk):
                 self.append_chat("\n[새롭게 장기 기억으로 넘길 만한 가치 있는 정보가 없었습니다.]\n", "system")
 
             # 6. 개운한 기상 (RAM 단기 문맥 초기화)
-            self.engine.messages = [{"role": "system", "content": self.engine.custom_system_prompt}]
+            static_rules = self.engine.get_default_system_prompt()
+            learned_text = f"\n\n[학습된 자가 원칙]\n{self.learned_principles}" if hasattr(self, 'learned_principles') and self.learned_principles.strip() else ""
+            combined_prompt = f"{static_rules}\n\n[사용자 지정 페르소나 및 지침]\n{self.user_instruction}{learned_text}"
+            
+            with self.memory_lock:
+                self.engine.messages = [{"role": "system", "content": combined_prompt}]
             self.append_chat("\n☀️ 메모리 최적화가 완료되었습니다. 불필요한 단기 기억이 지워지고 개운한 상태로 새 대화를 시작할 준비가 되었습니다!\n", "system")
             self.log_debug("Deep Sleep 완료. 단기 문맥(RAM)이 성공적으로 비워졌습니다.")
             
@@ -1071,9 +1081,49 @@ class MOPApp(ctk.CTk):
         
         # 사용자가 엔터를 쳤을 때는 무조건 화면을 맨 아래로 끌어내립니다.
         self.append_chat(f"\n👤 사용자: {query}\n", "user", force_scroll=True)
+
+        self.update_history("user", query)
         
         threading.Thread(target=self.ai_response_task, args=(query,), daemon=True).start()
         return "break"
+    
+    def update_history(self, role, content):
+        """단기 기억(engine.messages)을 업데이트하고 임계치 도달 시 장기 기억으로 이관"""
+        # 👇 [충돌 A 패치] 자물쇠를 걸어서 ai_response_task와 꼬이지 않게 보호
+        with self.memory_lock:
+            self.engine.messages.append({"role": role, "content": content})
+            
+            MAX_TURNS = 30 
+            SHIFT_SIZE = 10
+            
+            if len(self.engine.messages) > MAX_TURNS:
+                old_memories = self.engine.messages[1 : 1 + SHIFT_SIZE]
+                del self.engine.messages[1 : 1 + SHIFT_SIZE]
+                
+                import threading
+                threading.Thread(target=self._hippocampus_shift, args=(old_memories,), daemon=True).start()
+
+    def _hippocampus_shift(self, memory_block):
+        if self.engine.llm is None: return
+        try:
+            context_text = "\n".join([f"[{m['role']}] {m['content'][:300]}" for m in memory_block])
+            self.engine.vdb.add_memory(context_text, {"source": "auto_shift"})
+            
+            summary_prompt = f"다음 대화 내용을 1줄로 요약해:\n{context_text}"
+            response = cast(Dict[str, Any], self.engine.llm.create_chat_completion(
+                messages=[{"role": "user", "content": summary_prompt}], max_tokens=200, temperature=0.3, stream=False
+            ))
+            raw_content = response['choices'][0]['message'].get('content', '')
+            summary = (raw_content if raw_content else "요약 실패").strip()
+            trace = {"role": "system", "content": f"[이전 맥락 요약]: {summary}"}
+            
+            # 👇 여기도 삽입할 때 자물쇠!
+            with self.memory_lock:
+                self.engine.messages.insert(1, trace)
+            self.log_debug("🧠 단기 기억 10턴을 요약하여 장기 기억으로 이관했습니다.")
+        except Exception as e:
+            self.log_debug(f"⚠️ 이관 중 오류: {e}")
+
 
     # --- [전송/정지 버튼 상태 전환 헬퍼] ---
     def set_ui_generating_state(self):
@@ -1114,70 +1164,66 @@ class MOPApp(ctk.CTk):
 
     # 2. 스마트 스크롤의 핵심 로직 추가
     def _append_chat_internal(self, text, role="ai", thought=None, force_scroll=False):
-        # yview()가 None을 반환하는 상황을 대비한 안전 장치 (기본값 True)
         is_at_bottom = True 
         try:
             yview_result = self.chat_view.yview()
             if yview_result is not None and len(yview_result) > 1:
-                current_y_bottom = yview_result[1]
-                is_at_bottom = current_y_bottom >= 0.99
-        except Exception:
-            pass  # 예외가 발생해도 앱이 뻗지 않고 자연스럽게 스크롤을 내립니다.
+                is_at_bottom = yview_result[1] >= 0.99
+        except Exception: pass
 
         self.chat_view.configure(state="normal")
+
+        # 👇 [누수 A 패치] 텍스트 삭제 시 엮여있는 UI 위젯도 찾아내서 파괴!
+        current_lines = int(self.chat_view.index("end-1c").split('.')[0])
+        if current_lines > 500:
+            deleted_lines_count = current_lines - 500
+            self.chat_view.delete("1.0", f"{deleted_lines_count}.0")
+            
+            # 쓰레기통을 뒤져서 삭제된 줄에 있던 위젯들을 물리적으로 파괴합니다.
+            survived_widgets = []
+            for line_idx, widget in self.ui_widgets_trashbin:
+                if line_idx <= deleted_lines_count:
+                    try: widget.destroy() 
+                    except: pass
+                else:
+                    survived_widgets.append((line_idx - deleted_lines_count, widget)) # 줄 번호 갱신
+            self.ui_widgets_trashbin = survived_widgets
+
+        if text: self.chat_view.insert("end", text)
         
-        # 1. 순수 대화 텍스트 삽입
-        if text:
-            self.chat_view.insert("end", text)
-        
-        # 2. 👇 [토글 UI 삽입] 사고 과정(Thought)이 있을 경우 텍스트박스 안에 버튼을 박아 넣습니다.
         if thought:
             import customtkinter as ctk
-            
-            # chat_view를 부모로 하는 투명 프레임 생성
             thought_frame = ctk.CTkFrame(self.chat_view, fg_color="transparent")
             
-            # 숨겨둘 텍스트박스 (사고 과정 내용)
+            # 👇 위젯이 생성된 '현재 줄 번호'를 쓰레기통에 함께 기록
+            insert_line = int(self.chat_view.index("end-1c").split('.')[0])
+            self.ui_widgets_trashbin.append((insert_line, thought_frame))
+
             thought_box = ctk.CTkTextbox(thought_frame, height=100, width=500, fg_color="#2B2B2B", text_color="#A0A0A0", font=("Consolas", 12))
             thought_box.insert("0.0", thought)
             thought_box.configure(state="disabled")
             
-            # 토글 동작 함수
             def toggle_thought():
                 if thought_box.winfo_ismapped():
-                    thought_box.pack_forget() # 숨기기
+                    thought_box.pack_forget()
                     toggle_btn.configure(text="▶ 사고 과정 보기 (Hidden)", text_color="#7A7A7A")
                 else:
-                    thought_box.pack(fill="x", pady=(5, 0)) # 보이기
+                    thought_box.pack(fill="x", pady=(5, 0))
                     toggle_btn.configure(text="▼ 사고 과정 닫기", text_color="#00A2FF")
-                    self.chat_view.see("end") # 열었을 때 자동으로 스크롤 따라가기
+                    self.chat_view.see("end")
 
-            # 토글 버튼 생성
-            toggle_btn = ctk.CTkButton(
-                thought_frame, 
-                text="▶ 사고 과정 보기 (Hidden)", 
-                width=150, height=24,
-                fg_color="transparent", hover_color="#3A3A3A", text_color="#7A7A7A",
-                command=toggle_thought
-            )
+            toggle_btn = ctk.CTkButton(thought_frame, text="▶ 사고 과정 보기 (Hidden)", width=150, height=24, fg_color="transparent", hover_color="#3A3A3A", text_color="#7A7A7A", command=toggle_thought)
             toggle_btn.pack(anchor="w")
 
-            # 텍스트 줄바꿈 후, CTkTextbox의 내부 tk.Text 위젯에 프레임을 '창' 형태로 박아 넣음
             self.chat_view.insert("end", "\n")
             try:
-                # CustomTkinter 텍스트박스의 내부 위젯(_textbox)에 직접 접근
                 self.chat_view._textbox.window_create("end", window=thought_frame)
                 self.chat_view.insert("end", "\n\n")
             except Exception as e:
-                # 만약 내부 위젯 접근에 실패하면 텍스트로 대체 출력 (안전 장치)
-                self.log_debug(f"UI 삽입 실패, 텍스트로 대체: {e}")
                 self.chat_view.insert("end", f"[사고 과정]\n{thought}\n\n")
 
         self.chat_view.configure(state="disabled")
-        
-        # 강제 스크롤 요청이거나, 화면 맨 아래를 보고 있었을 때만 스크롤을 따라갑니다.
-        if force_scroll or is_at_bottom:
-            self.chat_view.see("end")
+        if force_scroll or is_at_bottom: self.chat_view.see("end")
 
     def log_debug(self, msg):
         self.after(0, self._log_debug_internal, msg)
@@ -1680,55 +1726,70 @@ class MOPApp(ctk.CTk):
                     json_match = re.search(r'```(?:json)?\s*(\[.*?\]|\{.*?\})\s*```', assistant_content, re.DOTALL | re.IGNORECASE)
 
                     if json_match:
-                        json_str = json_match.group(1).strip()
-                        
-                        # 👇 [핵심 패치] 열린 괄호와 닫힌 괄호의 개수를 비교하여 모자란 만큼 채워 넣음
-                        open_braces = json_str.count('{')
-                        close_braces = json_str.count('}')
-                        
-                        if open_braces > close_braces:
-                            missing_count = open_braces - close_braces
-                            json_str += '}' * missing_count
-                            self.log_debug(f"🔧 누락된 JSON 닫는 괄호 {missing_count}개를 자동 복구했습니다.")
+                            json_str = json_match.group(1).strip()
+                            
+                            # 👇 [핵심 패치] 열린 괄호와 닫힌 괄호의 개수를 비교하여 모자란 만큼 채워 넣음
+                            open_braces = json_str.count('{')
+                            close_braces = json_str.count('}')
+                            
+                            if open_braces > close_braces:
+                                missing_count = open_braces - close_braces
+                                json_str += '}' * missing_count
+                                self.log_debug(f"🔧 누락된 JSON 닫는 괄호 {missing_count}개를 자동 복구했습니다.")
 
-                        parsed = None  # 변수 초기화로 UnboundLocalError 원천 차단
-                        
-                        try:
-                            # 1차 시도: 표준 JSON 파싱
-                            parsed = json.loads(json_str)
-                        except json.JSONDecodeError:
-                            # 2차 시도: 파이썬 ast를 사용해 복구 시도
-                            import ast
+                            parsed = None  # 변수 초기화로 UnboundLocalError 원천 차단
+                            
                             try:
-                                parsed = ast.literal_eval(json_str)
-                            except Exception as e:
-                                # 👇 스레드 생존 & 에이전트 팩트 폭격 처리
-                                self.log_debug(f"⚠️ AI가 잘못된 형식의 JSON을 출력했습니다. 재시도 유도 중...")
-                                is_tool_call = True
-                                tc_name = "json_syntax_error"
-                                # 딕셔너리 구조가 올바르게 닫히도록 수정
-                                tc_args = json.dumps({
-                                    "error": f"JSON 형식이 잘못되었습니다 (따옴표나 괄호 누락). 올바른 JSON 블록(\"bad_json\": {json_str[:200]})  # 너무 길면 잘라서 보여줌"
-                                })
-
-                        
-                        # 파싱(1차 또는 2차)에 성공해서 parsed 데이터가 존재할 때만 아래 로직 실행
-                        if parsed is not None:
-                            try:    
-                                if isinstance(parsed, list): 
-                                    parsed = parsed[0]
-                                    
-                                if isinstance(parsed, dict) and (parsed.get("name") or parsed.get("tool")):
+                                # 1차 시도: 표준 JSON 파싱
+                                parsed = json.loads(json_str)
+                            except json.JSONDecodeError:
+                                # 2차 시도: 파이썬 ast를 사용해 복구 시도
+                                import ast
+                                try:
+                                    parsed = ast.literal_eval(json_str)
+                                except Exception as e:
+                                    # 👇 스레드 생존 & 에이전트 팩트 폭격 처리
+                                    self.log_debug(f"⚠️ AI가 잘못된 형식의 JSON을 출력했습니다. 재시도 유도 중...")
                                     is_tool_call = True
-                                    tc_name = parsed.get("name") or parsed.get("tool")
-                                    tc_args = json.dumps(parsed.get("arguments") or parsed.get("parameters", parsed))
-                            except Exception as e:
-                                # 구조가 아예 박살 난 경우 (AI에게 피드백)
-                                is_tool_call = True
-                                tc_name = "json_syntax_error"
-                                tc_args = json.dumps({"error_detail": str(e)})
+                                    tc_name = "json_syntax_error"
+                                    # 문자열 안의 주석 제거 및 깔끔한 정리
+                                    tc_args = json.dumps({
+                                        "error": f"JSON 형식이 잘못되었습니다(따옴표나 괄호 누락). 올바른 JSON 규칙을 준수하세요. (문제의 코드: {json_str[:200]})"
+                                    })
 
-                    self.engine.archive_to_sqlite("assistant", assistant_content.strip())
+                            # 파싱(1차 또는 2차)에 성공해서 parsed 데이터가 존재할 때만 아래 로직 실행
+                            if parsed is not None:
+                                try:    
+                                    if isinstance(parsed, list): 
+                                        parsed = parsed[0]
+                                        
+                                    if isinstance(parsed, dict) and (parsed.get("name") or parsed.get("tool")):
+                                        is_tool_call = True
+                                        tc_name = parsed.get("name") or parsed.get("tool")
+                                        tc_args = json.dumps(parsed.get("arguments") or parsed.get("parameters", parsed))
+                                except Exception as e:
+                                    # 구조가 아예 박살 난 경우 (AI에게 피드백)
+                                    is_tool_call = True
+                                    tc_name = "json_syntax_error"
+                                    tc_args = json.dumps({"error_detail": str(e)})
+                                    
+                    else:
+                            # 👇 [완벽 방어 패치]
+                            # 1. result_text가 아니라 기존에 쓰시던 assistant_content를 사용합니다.
+                            # 2. display_text가 선언되지 않았더라도 Pylance 에러가 나지 않도록 안전하게 가져옵니다.
+                            safe_display = locals().get('display_text', '')
+                            final_ai_text = safe_display if safe_display else assistant_content
+                            
+                            # 1. MOP의 뇌(단기 기억 및 해마 로직)에 AI의 최종 답변을 각인시킵니다.
+                            self.update_history("assistant", final_ai_text)
+                            
+                            # 2. 파일 DB(SQLite)에 백업
+                            self.engine.archive_to_sqlite("assistant", final_ai_text.strip())
+                            
+                            self.log_debug("✅ 턴 종료: AI의 최종 응답이 단기 기억에 저장되었습니다.")
+                            
+                            # 3. [매우 중요] 루프를 강제로 탈출하여 AI 스레드를 평화롭게 종료시킵니다.
+                            break
                     
                 # 4. 도구 실행 루틴
                 if is_tool_call:
@@ -2169,6 +2230,9 @@ class MOPApp(ctk.CTk):
                 self.after(0, self.set_ui_idle_state)
                 self.is_idle_running = False
                 
+                import gc
+                gc.collect()
+
                 self.log_debug("🔄 UI가 정상 입력 대기 모드로 강제 복구되었습니다.")
 
             # 메인 스레드(Tkinter)에 안전하게 UI 복구 명령 하달
@@ -2176,19 +2240,36 @@ class MOPApp(ctk.CTk):
 
     # 유휴 모니터링 루프: 10초마다 사용자의 유휴 상태를 검사하여 자동 작업 트리거        
     def idle_monitor_loop(self):
-        """10초마다 사용자의 유휴 상태를 검사합니다."""
-        # 1. Idle 모드가 켜져 있고
-        # 2. AI가 현재 아무 작업도 안 하고 있으며
-        # 3. Plan Mode 팝업(결재 대기)이 떠있지 않을 때만 카운트!
+        """10초마다 유휴 상태 검사 및 좀비 작업 가비지 컬렉션(GC)"""
+        
+        # 👇 [누수 B 패치] 버려진 서브에이전트 / 쉘 프로세스 자동 청소
+        # 1. 완료된 지 오래된(체크 안 한) 백그라운드 프로세스 청소
+        completed_tasks = []
+        for tid, t_info in self.engine.background_tasks.items():
+            if t_info["process"].poll() is not None: 
+                completed_tasks.append(tid)
+        for tid in completed_tasks:
+            # 묻지마 삭제 (메모리 확보)
+            try: self.engine.background_tasks[tid]["process"].communicate(timeout=1)
+            except: pass
+            del self.engine.background_tasks[tid] 
+
+        # 2. 결과가 나온 지 오래된 서브에이전트 찌꺼기 청소
+        completed_agents = [tid for tid, info in self.engine.parallel_sub_agents.items() if info["status"] in ["completed", "error"]]
+        for tid in completed_agents:
+            del self.engine.parallel_sub_agents[tid]
+            
+        if completed_tasks or completed_agents:
+            self.log_debug("🧹 [시스템 GC] 방치된 백그라운드 좀비 작업들을 청소하여 메모리를 확보했습니다.")
+
+
+        # (이하 기존 Idle 모드 트리거 로직 유지)
         if self.idle_mode_var.get() and not getattr(self, 'is_generating', False) and not getattr(self, 'is_waiting_for_approval', False):
             import time
             idle_time = time.time() - self.last_user_interaction
-            
-            # 테스트를 위해 180초(3분)로 설정. 나중에 600초(10분) 등으로 늘리시면 됩니다.
             if idle_time > 180:
                 self.trigger_idle_task()
         
-        # 10초 뒤에 다시 자기 자신을 호출 (무한 루프)
         self.after(10000, self.idle_monitor_loop)
 
     def trigger_idle_task(self):
@@ -2215,7 +2296,7 @@ class MOPApp(ctk.CTk):
             "💡 [특별 지시: 자가 원칙 점검]\n\n"
             "작업을 진행하면서 새롭게 깨달은 효율적인 방법론이나 치명적인 실수 방지책이 있다면, "
             "'update_self_principles' 도구를 사용하여 당신의 핵심 행동 원칙을 갱신하세요. "
-            "원칙은 시스템 전체에 영구적인 영향을 미치며, 최대 4개까지만 가질 수 있으므로 가장 중요하고 범용적인 것으로 엄선해야 합니다.\n\n"
+            "원칙은 시스템 전체에 영구적인 영향을 미치며, 최대 10개까지만 가질 수 있으므로 가장 중요하고 범용적인 것으로 엄선해야 합니다.\n\n"
             "---[진화 및 학습 지시사항]---\n"
             "1. [과거 분석]: 아래 제공된 '최근 대화 기록'을 꼼꼼히 분석하세요. 당신이 최근 문제를 해결하는 데 어려움을 겪었거나, 반복적인 노가다를 했다면 어떤 '새로운 파이썬 도구'가 필요한지 추론하세요.\n"
             "2. [도구 창조]: 필요성이 확인되면 즉시 `create_new_tool` 도구를 호출하여 스스로 새로운 기능을 제작하고 시스템에 등록하세요. 또는 `edit_file`을 사용하여 기존 도구나 앱의 코드를 직접 수정/개선하세요.\n"
