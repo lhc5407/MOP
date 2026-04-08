@@ -1,6 +1,6 @@
 import html
 import customtkinter as ctk
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 import datetime
 import threading
 import json
@@ -13,6 +13,19 @@ import sys
 import traceback
 import threading
 import time
+
+# 👇 [패치] PyInstaller Windowed 모드에서 sys.stdout/stderr가 None이 되어 isatty() 호출 시 발생하는 크래시 방지
+class DummyOutput:
+    def write(self, *args, **kwargs): pass
+    def flush(self, *args, **kwargs): pass
+    def isatty(self): return False
+
+if sys.stdout is None:
+    sys.stdout = DummyOutput()
+
+if sys.stderr is None:
+    sys.stderr = DummyOutput()
+
 import llama_cpp
 from llama_cpp import Llama
 from typing import List, Dict, Any, cast, Iterator
@@ -50,6 +63,18 @@ def resolve_path(relative_path: str) -> str:
         if os.path.exists(bundled_path):
             return bundled_path
     return local_path
+
+
+def get_startup_log_path() -> str:
+    return os.path.join(os.getcwd(), "MOP_startup.log")
+
+
+def write_startup_log(message: str):
+    try:
+        with open(get_startup_log_path(), "a", encoding="utf-8") as f:
+            f.write(message + "\n")
+    except Exception:
+        pass
 
 
 # --- [기본 테마 설정] ---
@@ -391,7 +416,9 @@ class MOPEngine:
             "13. [OS 환경]: 당신은 현재 Windows 환경에서 실행 중입니다. 터미널 명령어는 반드시 윈도우 CMD 기준으로 작성하세요. (예: pwd 대신 cd, ls 대신 dir 사용)\n"
             "14. [로컬 프로젝트 지침 절대 준수]: 만약 프롬프트 하단에 '[현재 프로젝트 맞춤 지침]' 섹션이 있다면, 이를 최우선 법률로 적용하여 코드를 작성하세요.\n"
             "15. [사고 언어 고정]: `<think>` 태그 내부를 포함한 모든 내부 추론 과정은 반드시 '한국어' 또는 '영어'로만 작성하세요.\n"
-            "16. [병렬 작업 최적화]: 복잡하고 독립적인 여러 과업을 받으면, 'delegate_parallel_task' 도구를 호출하여 동시에 실행을 위임하세요. 이후 반드시 'join_sub_agent_results'를 호출하여 결과를 통합하세요."
+            "16. [병렬 작업 최적화]: 복잡하고 독립적인 여러 과업을 받으면, 'delegate_parallel_task' 도구를 호출하여 동시에 실행을 위임하세요. 이후 반드시 'join_sub_agent_results'를 호출하여 결과를 통합하세요.\n"
+            "17. [경로 작성 규칙]: Windows 환경이더라도 파일 경로를 작성할 때는 반드시 역슬래시(\\) 대신 슬래시(/)를 사용하세요. (예: C:/Users/Public/Desktop/...) 역슬래시는 JSON 파싱 에러를 유발합니다.\n"
+            "18. [파일 검증 최적화]: 특정 파일의 코드를 분석할 때, 터미널 명령어(dir 등)로 파일 존재 여부를 먼저 확인하는 낭비를 하지 마세요. 즉시 'view_file' 도구를 호출하세요. 파일이 없다면 도구가 자동으로 오류를 반환해 줍니다."
         )
 
     def get_tools(self):
@@ -620,6 +647,9 @@ class MOPApp(ctk.CTk):
         # 창 설정
         self.title("MOP - Full Custom Agent Dashboard")
         self.geometry("1300x850")
+        self.deiconify()
+        self.lift()
+        self.focus_force()
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
@@ -2422,19 +2452,29 @@ class MOPApp(ctk.CTk):
 
 if __name__ == "__main__":
     import time
-    
-    # 앱이 비정상 종료되어도 계속 다시 살아나는 불사조 루프
-    while True:
+    import traceback
+
+    write_startup_log("===== MOP 시작: " + time.strftime('%Y-%m-%d %H:%M:%S') + " =====")
+
+    restart_attempts = 0
+    while restart_attempts < 2:
         try:
+            write_startup_log(f"시작 시도 #{restart_attempts + 1}")
             app = MOPApp()
             app.mainloop()
-            
-            # 사용자가 정상적으로 창을 닫은 경우 (안전한 종료)
-            print("MOP 시스템이 정상적으로 종료되었습니다.")
-            break 
-            
+
+            write_startup_log("MOP 시스템이 정상적으로 종료되었습니다.")
+            break
         except Exception as e:
-            # 알 수 없는 치명적 오류로 앱이 터진 경우 3초 뒤 자동 재시작
-            print(f"🔥 치명적 오류 발생! 앱이 뻗었습니다: {e}")
-            print("🔄 3초 뒤 MOP 시스템을 자동으로 재가동합니다...")
+            restart_attempts += 1
+            err_text = traceback.format_exc()
+            write_startup_log(f"치명적 오류 발생 (시도 {restart_attempts}): {e}")
+            write_startup_log(err_text)
+            try:
+                messagebox.showerror("MOP 오류", f"MOP 시작 중 오류가 발생했습니다. 로그 파일을 확인하세요: {get_startup_log_path()}")
+            except Exception:
+                pass
+            if restart_attempts >= 2:
+                write_startup_log("재시도 한계 도달, 앱을 종료합니다.")
+                break
             time.sleep(3)
