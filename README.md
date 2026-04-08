@@ -15,7 +15,7 @@ MOP는 완전한 로컬 환경(Local Environment)에서 구동되며, 스스로 
 
 ### ⚙️ 2. 자율 성장 & TDD (테스트 주도 개발) 루프
 * **자율 성장 모드 (Idle Mode):** 사용자가 자리를 비우면 AI가 스스로 작동하여 코드를 작성하고 시스템을 최적화합니다.
-* **동적 도구 생성 (`create_new_tool`):** AI가 스스로 파이썬 도구(Tool)를 작성하고 `custom_tools.json`에 영구 등록하여 다음 턴부터 즉시 사용합니다.
+* **동적 도구 생성 (`create_new_tool`):** AI가 스스로 파이썬 도구(Tool)를 작성하고 `res/custom_tools.json`에 영구 등록하여 다음 턴부터 즉시 사용합니다.
 * **강제 2단계 컴파일 검증:** 파일 수정(`edit_file`, `append_to_file`) 및 새 도구 생성 시, 실행 전 반드시 `python -m py_compile`을 통해 문법 에러(Syntax Error)를 사전 차단합니다.
 
 ### 🛡️ 3. 무적의 시스템 방어막 (Safety & Shielding)

@@ -1,5 +1,5 @@
 """
-skills/computer_tools.py
+res/skills/computer_tools.py
 마우스 및 키보드 제어를 위한 독립 스킬 모듈 (Pylance Type-Safe Version)
 """
 

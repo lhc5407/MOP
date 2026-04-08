@@ -17,7 +17,7 @@ import llama_cpp
 from llama_cpp import Llama
 from typing import List, Dict, Any, cast, Iterator
 from ddgs import DDGS
-from mop_memory import VectorMemoryManager
+from res.mop_memory import VectorMemoryManager
 
 try:
     import llama_cpp
@@ -32,7 +32,7 @@ ctk.set_default_color_theme("blue")
 
 # --- [1. MOP AI 엔진 클래스 (핵심 로직 & 도구 모음)] ---
 class MOPEngine:
-    def __init__(self, db_path="./skills/chat_history.db"):
+    def __init__(self, db_path="./res/skills/chat_history.db"):
         self.db_path = db_path
         self.llm = None
         self.messages = []
@@ -58,7 +58,7 @@ class MOPEngine:
 
     def migrate_old_memory(self):
         """구형 .agent_memory 파일을 읽어 Vector DB로 이전하고 백업합니다."""
-        old_mem_path = "./skills/.agent_memory"
+        old_mem_path = "./res/skills/.agent_memory"
         if os.path.exists(old_mem_path):
             print("🔄 구형 메모리 파일(.agent_memory)을 Vector DB로 마이그레이션 합니다...")
             try:
@@ -306,7 +306,7 @@ class MOPEngine:
         
         # 👇 [신규 추가] 저장된 자가 원칙을 읽어옵니다.
         principles_str = ""
-        principles_path = "self_principles.json"
+        principles_path = "res/self_principles.json"
         if os.path.exists(principles_path):
             try:
                 with open(principles_path, "r", encoding="utf-8") as f:
@@ -542,7 +542,7 @@ class MOPEngine:
         ]
     
         import os, json
-        registry_path = "custom_tools.json"
+        registry_path = "res/custom_tools.json"
         if os.path.exists(registry_path):
             try:
                 with open(registry_path, "r", encoding="utf-8") as f:
@@ -1269,7 +1269,7 @@ class MOPApp(ctk.CTk):
 
     def load_settings(self):
         """앱 시작 시 config.json 파일에서 설정값을 불러옵니다."""
-        config_path = "./skills/mop_config.json"
+        config_path = "./res/skills/mop_config.json"
         if os.path.exists(config_path):
             try:
                 with open(config_path, "r", encoding="utf-8") as f:
@@ -1309,7 +1309,7 @@ class MOPApp(ctk.CTk):
 
     def save_settings(self):
         """앱 종료 시 현재 UI 설정값과 프롬프트를 config.json 파일에 저장합니다."""
-        config_path = "./skills/mop_config.json"
+        config_path = "./res/skills/mop_config.json"
         config = {
             "model_path": self.full_model_path,  # 👈 [수정] model_path_var.get() 대신 절대 경로 저장
             "kv_quant": self.kv_quant_var.get(),
@@ -1568,7 +1568,7 @@ class MOPApp(ctk.CTk):
             
             # 👇 [신규 패치] 현재 작업 디렉토리(CWD)를 스캔하여 로컬 규칙 파일 읽어오기
             local_rules_text = ""
-            local_rules_path = os.path.join(os.getcwd(), ".mop_rules.md")
+            local_rules_path = os.path.join(os.getcwd(), "res", ".mop_rules.md")
             if os.path.exists(local_rules_path):
                 try:
                     # 1차 시도: 글로벌 표준인 UTF-8로 읽기
@@ -1850,7 +1850,7 @@ class MOPApp(ctk.CTk):
                                 )
                             
                             if approved:
-                                script_path = os.path.join(".", "skills", "computer_tools.py")
+                                script_path = os.path.join(".", "res", "skills", "computer_tools.py")
                                 cli_args = ["python", script_path, "--device", "mouse" if "mouse" in tc_name else "keyboard", "--action", args_dict.get("action", "")]
                                 for k in ["x", "y", "text", "key"]:
                                     if k in args_dict: cli_args.extend([f"--{k}", str(args_dict[k])])
@@ -1908,7 +1908,7 @@ class MOPApp(ctk.CTk):
                         # 1. 파일 보기 (View)
                         elif tc_name == "view_file":
                             tool_result = self.engine.execute_skill_safely([
-                                sys.executable, "./skills/file_tools.py", 
+                                sys.executable, "./res/skills/file_tools.py", 
                                 "--action", "view", 
                                 "--path", args_dict.get("file_path", "")
                             ])
@@ -1916,7 +1916,7 @@ class MOPApp(ctk.CTk):
                         # 2. 파일 찾기 (Find) - 인자 명칭 동기화
                         elif tc_name == "find_files":
                             tool_result = self.engine.execute_skill_safely([
-                                sys.executable, "./skills/file_tools.py", 
+                                sys.executable, "./res/skills/file_tools.py", 
                                 "--action", "find", 
                                 "--pattern", args_dict.get("extension", "") # --pattern으로 전달
                             ])
@@ -1924,7 +1924,7 @@ class MOPApp(ctk.CTk):
                         # 3. 텍스트 검색 (Search) - 인자 명칭 동기화
                         elif tc_name == "search_text":
                             tool_result = self.engine.execute_skill_safely([
-                                sys.executable, "./skills/file_tools.py", 
+                                sys.executable, "./res/skills/file_tools.py", 
                                 "--action", "search", 
                                 "--query", args_dict.get("search_text", ""), # --query로 전달
                                 "--path", args_dict.get("file_path", ".")
@@ -1938,7 +1938,7 @@ class MOPApp(ctk.CTk):
                             
                             # 스크립트 호출 실행
                             tool_result = self.engine.execute_skill_safely([
-                                sys.executable, "./skills/file_tools.py",
+                                sys.executable, "./res/skills/file_tools.py",
                                 "--action", "edit",
                                 "--path", f_path,
                                 "--old_text", s_str,
@@ -2026,7 +2026,7 @@ class MOPApp(ctk.CTk):
                             new_principles = new_principles[:4]
                             
                             try:
-                                with open("self_principles.json", "w", encoding="utf-8") as f:
+                                with open("res/self_principles.json", "w", encoding="utf-8") as f:
                                     json.dump(new_principles, f, ensure_ascii=False, indent=4)
                                 
                                 tool_result = f"✅ 성공: 시스템의 자가 원칙이 {len(new_principles)}개로 업데이트 및 각인되었습니다."
@@ -2042,14 +2042,14 @@ class MOPApp(ctk.CTk):
                             t_params = args_dict.get("parameters_schema", {})
                             
                             # 1. 파이썬 실행 파일 생성
-                            os.makedirs("skills", exist_ok=True)
-                            py_path = os.path.join("skills", f"{t_name}.py")
+                            os.makedirs("res/skills", exist_ok=True)
+                            py_path = os.path.join("res", "skills", f"{t_name}.py")
                             try:
                                 with open(py_path, "w", encoding="utf-8") as f:
                                     f.write(t_code)
                                     
                                 # 2. 커스텀 도구 레지스트리(JSON) 업데이트
-                                registry_path = "custom_tools.json"
+                                registry_path = "res/custom_tools.json"
                                 custom_tools = []
                                 
                                 # 기존 도구가 있으면 먼저 '읽어옵니다' (r 모드)
@@ -2084,14 +2084,14 @@ class MOPApp(ctk.CTk):
                                     f"✅ 성공: 새 도구 '{t_name}'가 완벽하게 생성되어 시스템에 등록되었습니다.\n\n"
                                     f"---[시스템 강제 지시 (2단계 TDD 검증)]---\n"
                                     f"방금 만든 코드를 즉시 검증해야 합니다. 다음 두 단계를 엄격히 순서대로 실행하세요.\n"
-                                    f"1. [안전 문법 검사]: 먼저 'run_shell_command'를 호출하여 `python -m py_compile skills/{t_name}.py`를 실행하세요. 에러가 나면 'edit_file'로 즉시 고쳐야 합니다.\n"
+                                    f"1. [안전 문법 검사]: 먼저 'run_shell_command'를 호출하여 `python -m py_compile res/skills/{t_name}.py`를 실행하세요. 에러가 나면 'edit_file'로 즉시 고쳐야 합니다.\n"
                                     f"2. [실전 로직 테스트]: 문법 검사를 무사히 통과했다면, 이번엔 '{t_name}' 도구를 직접 호출하여 예시 데이터를 넣고 결과값이 정상적으로 도출되는지 확인하세요."
                                 )
                             except Exception as e:
                                 tool_result = f"오류: 도구 생성 실패 - {e}"
                         else: 
                             # 👇 [신규 패치] 기본 도구가 아니라면, 내가 만든 커스텀 도구인지 레지스트리 확인!
-                            registry_path = "custom_tools.json"
+                            registry_path = "res/custom_tools.json"
                             is_custom_tool = False
                             if os.path.exists(registry_path):
                                 with open(registry_path, "r", encoding="utf-8") as f:
@@ -2100,7 +2100,7 @@ class MOPApp(ctk.CTk):
                                         is_custom_tool = True
                                         
                             if is_custom_tool:
-                                py_path = os.path.join("skills", f"{tc_name}.py")
+                                py_path = os.path.join("res", "skills", f"{tc_name}.py")
                                 if os.path.exists(py_path):
                                     # 👇 [핵심 패치] 여기서도 "python" 대신 sys.executable 사용
                                     cli_args = [sys.executable, py_path]

@@ -1,5 +1,5 @@
 """
-skills/memory_tools.py
+res/skills/memory_tools.py
 에이전트의 장기 기억(Long-term Memory) 관리를 위한 스킬 모듈 (Pylance Type-Safe)
 """
 

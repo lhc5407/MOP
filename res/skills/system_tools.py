@@ -1,5 +1,5 @@
 """
-skills/system_tools.py
+res/skills/system_tools.py
 시스템 제어 및 실행을 위한 독립 스킬 모듈
 """
 

@@ -4,7 +4,7 @@ import chromadb
 from chromadb.utils import embedding_functions
 
 class VectorMemoryManager:
-    def __init__(self, db_path="./vdb_storage"):
+    def __init__(self, db_path="./res/vdb_storage"):
         """로컬 벡터 데이터베이스(ChromaDB)를 초기화합니다."""
         self.db_path = db_path
         os.makedirs(self.db_path, exist_ok=True)

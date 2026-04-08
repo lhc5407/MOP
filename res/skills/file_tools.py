@@ -1,5 +1,5 @@
 """
-skills/file_tools.py
+res/skills/file_tools.py
 파일 및 코드 조작을 위한 독립 스킬 모듈 (View, Edit, Find, Search)
 """
 
