@@ -444,10 +444,23 @@ class MOPEngine:
             {"type": "function", "function": {"name": "manage_packages", "description": "패키지 관리(action, package_name)", "parameters": {"type": "object", "properties": {"action": {"type": "string"}, "package_name": {"type": "string"}}, "required": ["action"]}}},
             {"type": "function", "function": {"name": "control_mouse", "description": "마우스 제어(action: move/click, x, y)", "parameters": {"type": "object", "properties": {"action": {"type": "string"}, "x": {"type": "integer"}, "y": {"type": "integer"}}, "required": ["action"]}}},
             {"type": "function", "function": {"name": "control_keyboard", "description": "키보드 타이핑/단축키(action: type/press/hotkey, text, key)", "parameters": {"type": "object", "properties": {"action": {"type": "string"}, "text": {"type": "string"}, "key": {"type": "string"}}, "required": ["action"]}}},
-            {"type": "function", "function": {"name": "run_shell_command", "description": "터미널 명령어 실행(command)", "parameters": {"type": "function", "function": {"name": "run_shell_command", "description": "순수 Windows CMD 명령어만 실행합니다. (주의: PowerShell 명령어 절대 금지. 디렉토리 이동(cd)은 유지되지 않으므로 필요시 절대 경로를 사용하세요)", "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}}}},
             {"type": "function", "function": {"name": "view_file", "description": "파일 읽기(file_path)", "parameters": {"type": "function", "function": {"name": "view_file", "description": "파일의 내용을 읽어옵니다. 파일이 존재하지 않더라도 시스템이 알아서 '파일을 찾을 수 없음' 오류 텍스트를 안전하게 반환해 주므로, 사전 검사(dir 등) 없이 안심하고 즉시 이 도구를 호출하세요.", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}}, "required": ["file_path"]}}}}},
             {"type": "function", "function": {"name": "find_files", "description": "파일 찾기(extension)", "parameters": {"type": "object", "properties": {"extension": {"type": "string"}}, "required": ["extension"]}}},
             {"type": "function", "function": {"name": "search_text", "description": "내용 검색(search_text, file_path)", "parameters": {"type": "object", "properties": {"search_text": {"type": "string"}, "file_path": {"type": "string"}}, "required": ["search_text"]}}},
+            {
+                "type": "function",
+                "function": {
+                    "name": "run_shell_command",
+                    "description": "순수 Windows CMD 명령어만 실행합니다. (주의: PowerShell 명령어 절대 금지. 디렉토리 이동(cd)은 유지되지 않으므로 필요시 절대 경로를 사용하세요)",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": {"type": "string"}
+                        },
+                        "required": ["command"]
+                    }
+                }
+            },
             {
                 "type": "function",
                 "function": {
@@ -1971,13 +1984,9 @@ class MOPApp(ctk.CTk):
                                 f.write(code)
                             
                             # sys.executable을 사용하여 가상환경 파이썬으로 실행
-                            tool_result = self.engine.execute_skill_safely([sys.executable, "temp_snippet.py"])                        
+                            tool_result = self.engine.execute_skill_safely(["python", "temp_snippet.py"])                        
                         elif tc_name == "run_shell_command":
                             cmd = args_dict.get("command", "")
-                            
-                            # 👇 [완벽 패치] lambda를 사용하여 윈도우 경로(\U, \a 등)가 이스케이프 문자로 오작동하는 것을 원천 차단!
-                            cmd = re.sub(r'\bpython\b', lambda _: f'"{sys.executable}"', cmd)
-                            cmd = re.sub(r'\bpip\b', lambda _: f'"{sys.executable}" -m pip', cmd)
                             
                             forbidden_packages = ["llama-cpp-python", "torch", "customtkinter"]
                             if "pip " in cmd and any(pkg in cmd for pkg in forbidden_packages):
@@ -2013,7 +2022,7 @@ class MOPApp(ctk.CTk):
                         elif tc_name == "view_file":
                             file_tools_path = resolve_path("res/skills/file_tools.py")
                             tool_result = self.engine.execute_skill_safely([
-                                sys.executable, file_tools_path,
+                                "python", file_tools_path,  # 👈 sys.executable 대신 "python" 사용
                                 "--action", "view", 
                                 "--path", args_dict.get("file_path", "")
                             ])
@@ -2022,7 +2031,7 @@ class MOPApp(ctk.CTk):
                         elif tc_name == "find_files":
                             file_tools_path = resolve_path("res/skills/file_tools.py")
                             tool_result = self.engine.execute_skill_safely([
-                                sys.executable, file_tools_path,
+                                "python", file_tools_path,
                                 "--action", "find", 
                                 "--pattern", args_dict.get("extension", "") # --pattern으로 전달
                             ])
@@ -2031,7 +2040,7 @@ class MOPApp(ctk.CTk):
                         elif tc_name == "search_text":
                             file_tools_path = resolve_path("res/skills/file_tools.py")
                             tool_result = self.engine.execute_skill_safely([
-                                sys.executable, file_tools_path,
+                                "python", file_tools_path,
                                 "--action", "search", 
                                 "--query", args_dict.get("search_text", ""), # --query로 전달
                                 "--path", args_dict.get("file_path", ".")
@@ -2046,7 +2055,7 @@ class MOPApp(ctk.CTk):
                             
                             # 스크립트 호출 실행
                             tool_result = self.engine.execute_skill_safely([
-                                sys.executable, file_tools_path,
+                                "python", file_tools_path,
                                 "--action", "edit",
                                 "--path", f_path,
                                 "--old_text", s_str,
@@ -2062,10 +2071,6 @@ class MOPApp(ctk.CTk):
                                 )
                         elif tc_name == "start_background_task": 
                             cmd = args_dict.get("command", "")
-                            
-                            # 👇 [여기도 동일하게 패치]
-                            cmd = re.sub(r'\bpython\b', lambda _: f'"{sys.executable}"', cmd)
-                            cmd = re.sub(r'\bpip\b', lambda _: f'"{sys.executable}" -m pip', cmd)
                             
                             forbidden_packages = ["llama-cpp-python", "torch", "customtkinter"]
                             if "pip " in cmd and any(pkg in cmd for pkg in forbidden_packages):
@@ -2150,6 +2155,9 @@ class MOPApp(ctk.CTk):
                             t_desc = args_dict.get("description", "")
                             t_code = args_dict.get("python_code", "")
                             t_params = args_dict.get("parameters_schema", {})
+                            
+                            t_code = re.sub(r"^```python\s*", "", t_code, flags=re.IGNORECASE)
+                            t_code = re.sub(r"```\s*$", "", t_code).strip()
                             
                             # 1. 파이썬 실행 파일 생성
                             py_path = get_local_path(os.path.join("res", "skills", f"{t_name}.py"))
